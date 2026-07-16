@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">EventPilot command mark final concept</title>
+  <desc id="desc">EventPilot logo with navy command mark, three white lines, and a small gold compass in the bottom-right quarter.</desc>
+  <defs>
+    <linearGradient id="markGradient" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#235f8f"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#0f172a" flood-opacity="0.16"/>
+    </filter>
+    <style>
+      .bg { fill: #f4f7fa; }
+      .card { fill: #ffffff; filter: url(#shadow); }
+      .ink { fill: #0f172a; }
+      .muted { fill: #607089; }
+      .accent { fill: #235f8f; }
+      .gold { fill: #d99a2b; }
+      .word { font: 900 76px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .tag { font: 700 25px Inter, Arial, sans-serif; letter-spacing: 5px; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="720"/>
+  <rect class="card" x="105" y="122" width="990" height="476" rx="34"/>
+
+  <g transform="translate(190 230)">
+    <rect width="210" height="210" rx="46" fill="url(#markGradient)"/>
+
+    <path d="M58 70h94M58 105h61M58 140h94" fill="none" stroke="#ffffff" stroke-width="13" stroke-linecap="round"/>
+
+    <g transform="translate(158 158)">
+      <circle r="44" fill="#f8c768"/>
+      <circle r="31" fill="none" stroke="#0f172a" stroke-width="5" opacity="0.42"/>
+      <path d="M0-39v13M0 26v13M-39 0h13M26 0h13" fill="none" stroke="#0f172a" stroke-width="5" stroke-linecap="round" opacity="0.42"/>
+      <path d="M0-33l10 33-10 33-10-33z" fill="#0f172a" opacity="0.64" transform="rotate(45)"/>
+      <circle r="5" fill="#0f172a" opacity="0.64"/>
+    </g>
+  </g>
+
+  <g transform="translate(455 285)">
+    <text x="0" y="70" class="word ink">EventPilot</text>
+    <text x="5" y="118" class="tag muted">YOUR BEO NAVIGATOR</text>
+    <rect x="6" y="152" width="325" height="8" rx="4" class="accent" opacity="0.18"/>
+  </g>
+</svg>

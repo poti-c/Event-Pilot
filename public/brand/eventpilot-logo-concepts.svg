@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title desc">
+  <title id="title">EventPilot logo concepts</title>
+  <desc id="desc">Five vector logo concepts for EventPilot SaaS event operations platform.</desc>
+  <defs>
+    <linearGradient id="navyBlue" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#235f8f"/>
+    </linearGradient>
+    <linearGradient id="tealBlue" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#127457"/>
+      <stop offset="100%" stop-color="#235f8f"/>
+    </linearGradient>
+    <linearGradient id="goldBlue" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#d99a2b"/>
+      <stop offset="100%" stop-color="#235f8f"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg { fill: #f4f7fa; }
+      .card { fill: #ffffff; stroke: #d9e0e8; stroke-width: 2; filter: url(#softShadow); }
+      .ink { fill: #0f172a; }
+      .muted { fill: #607089; }
+      .blue { fill: #235f8f; }
+      .teal { fill: #127457; }
+      .gold { fill: #d99a2b; }
+      .line-blue { stroke: #235f8f; }
+      .line-teal { stroke: #127457; }
+      .line-gold { stroke: #d99a2b; }
+      .line-ink { stroke: #0f172a; }
+      .word { font: 800 48px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .tag { font: 600 18px Inter, Arial, sans-serif; letter-spacing: 2px; }
+      .label { font: 800 24px Inter, Arial, sans-serif; }
+      .caption { font: 500 19px Inter, Arial, sans-serif; }
+      .mono { font: 900 66px Inter, Arial, sans-serif; letter-spacing: -2px; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1080"/>
+  <text x="90" y="92" class="ink" style="font:900 54px Inter,Arial,sans-serif;">EventPilot Logo Directions</text>
+  <text x="92" y="132" class="muted caption">Choose one direction and I will use it for the flyer and login page.</text>
+
+  <g transform="translate(90 185)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">1. Command Mark</text>
+    <g transform="translate(56 102)">
+      <rect x="0" y="0" width="118" height="118" rx="28" fill="url(#navyBlue)"/>
+      <path d="M34 37h49M34 59h31M34 81h49" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+      <g transform="translate(89 89)">
+        <circle r="26" fill="#f8c768"/>
+        <circle r="18" fill="none" stroke="#0f172a" stroke-width="3.5" opacity="0.42"/>
+        <path d="M0-23v8M0 15v8M-23 0h8M15 0h8" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round" opacity="0.42"/>
+        <path d="M0-20l6 20-6 20-6-20z" fill="#0f172a" opacity="0.64" transform="rotate(45)"/>
+        <circle r="3" fill="#0f172a" opacity="0.64"/>
+      </g>
+    </g>
+    <text x="198" y="172" class="word ink">EventPilot</text>
+    <text x="201" y="207" class="tag muted">YOUR BEO NAVIGATOR</text>
+    <text x="34" y="306" class="caption muted">Best for SaaS credibility: clean, corporate, easy to read.</text>
+  </g>
+
+  <g transform="translate(645 185)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">2. Calendar Orbit</text>
+    <g transform="translate(56 104)">
+      <rect x="10" y="18" width="118" height="104" rx="22" fill="#e8f2fa" stroke="#235f8f" stroke-width="7"/>
+      <path d="M10 50h118" class="line-blue" fill="none" stroke-width="7"/>
+      <path d="M39 11v26M99 11v26" class="line-blue" fill="none" stroke-width="9" stroke-linecap="round"/>
+      <circle cx="69" cy="84" r="14" class="blue"/>
+      <path d="M1 124c41 33 112 34 154-10" fill="none" stroke="#127457" stroke-width="8" stroke-linecap="round"/>
+      <path d="M154 114l-8 20 23-7" fill="none" stroke="#127457" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+    </g>
+    <text x="208" y="174" class="word ink">EventPilot</text>
+    <text x="211" y="209" class="tag muted">FUNCTION DIARY</text>
+    <text x="34" y="306" class="caption muted">Best if calendar and booking control should be the first signal.</text>
+  </g>
+
+  <g transform="translate(1200 185)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">3. Flight Path</text>
+    <g transform="translate(52 108)">
+      <circle cx="70" cy="70" r="62" fill="#e9f7f1" stroke="#127457" stroke-width="7"/>
+      <path d="M34 82c35-45 78-59 132-49" fill="none" stroke="#235f8f" stroke-width="8" stroke-linecap="round"/>
+      <path d="M147 28l32 9-28 18 2-14z" fill="#235f8f"/>
+      <path d="M49 88l29-2 6 25" fill="none" stroke="#127457" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="40" y="86" class="mono ink">EP</text>
+    </g>
+    <text x="216" y="174" class="word ink">EventPilot</text>
+    <text x="219" y="209" class="tag muted">CONTROL THE FLOW</text>
+    <text x="34" y="306" class="caption muted">Best if you want the “pilot” idea to feel fast and modern.</text>
+  </g>
+
+  <g transform="translate(365 600)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">4. Pilot Compass</text>
+    <g transform="translate(58 104)">
+      <circle cx="72" cy="72" r="68" fill="#ffffff" stroke="#0f172a" stroke-width="7"/>
+      <circle cx="72" cy="72" r="47" fill="#e8f2fa"/>
+      <path d="M72 15l21 57-21 57-21-57z" fill="url(#goldBlue)"/>
+      <circle cx="72" cy="72" r="15" class="ink"/>
+      <path d="M72 31v-16M72 129v16M31 72H15M129 72h16" class="line-ink" fill="none" stroke-width="6" stroke-linecap="round"/>
+    </g>
+    <text x="213" y="174" class="word ink">EventPilot</text>
+    <text x="216" y="209" class="tag muted">GUIDED EVENTS</text>
+    <text x="34" y="306" class="caption muted">Best for premium hospitality: navigation, precision, trust.</text>
+  </g>
+
+  <g transform="translate(925 600)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">5. Venue Signal</text>
+    <g transform="translate(58 105)">
+      <rect x="20" y="42" width="110" height="88" rx="18" fill="url(#tealBlue)"/>
+      <path d="M47 130V73h56v57" fill="none" stroke="#ffffff" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M38 73h74M58 96h34" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+      <path d="M127 42c14-26 37-41 69-46M135 65c18-15 39-21 62-18M143 88c18-6 34-5 50 4" fill="none" stroke="#d99a2b" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <text x="218" y="174" class="word ink">EventPilot</text>
+    <text x="221" y="209" class="tag muted">VENUE CRM + BEO</text>
+    <text x="34" y="306" class="caption muted">Best if the platform should feel hotel-first and operational.</text>
+  </g>
+</svg>
