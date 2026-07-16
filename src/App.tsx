@@ -1059,8 +1059,8 @@ function App() {
 
         <div className="sidebar-footer">
           <p>Storage mode</p>
-          <strong>Browser local data</strong>
-          <span>Supabase deferred</span>
+          <strong>{isSupabaseEnabled ? 'Supabase cloud' : 'Browser local data'}</strong>
+          <span>{isSupabaseEnabled ? 'Synced to your account' : 'Offline sandbox'}</span>
         </div>
       </aside>
 
