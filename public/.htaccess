@@ -1,0 +1,27 @@
+# Event Pilot — SPA fallback for GoDaddy (Apache) shared hosting.
+# The app is a single-page app. Hash routes (#Dashboard, #BEOs, ...) work with
+# no server config, but the /admin portal uses a real path, so any request that
+# doesn't map to a real file/dir must be served index.html.
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Don't rewrite requests for existing files or directories (assets, etc.).
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Everything else falls back to the app shell.
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Cache fingerprinted build assets aggressively; never cache the HTML shell.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|svg|woff2?|png|jpg|jpeg|gif)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
