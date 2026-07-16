@@ -32,8 +32,10 @@ import {
   Utensils,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Session } from '@supabase/supabase-js'
 import './App.css'
+import { isSupabaseEnabled, supabase } from './supabaseClient'
 import {
   accounts,
   initialBookings,
@@ -113,31 +115,155 @@ const statusOrder: BookingStatus[] = [
   'Cancelled',
 ]
 
-function useLocalStorageState<T>(key: string, initialValue: T) {
-  const [value, setValue] = useState<T>(() => {
-    const stored = window.localStorage.getItem(key)
-    if (!stored) return initialValue
-
-    try {
-      return JSON.parse(stored) as T
-    } catch {
-      return initialValue
-    }
-  })
-
-  const setStoredValue = (nextValue: T | ((currentValue: T) => T)) => {
-    setValue((currentValue) => {
-      const resolved =
-        typeof nextValue === 'function'
-          ? (nextValue as (currentValue: T) => T)(currentValue)
-          : nextValue
-
-      window.localStorage.setItem(key, JSON.stringify(resolved))
-      return resolved
-    })
+function readLocal<T>(key: string, initialValue: T): T {
+  const stored = window.localStorage.getItem(key)
+  if (!stored) return initialValue
+  try {
+    return JSON.parse(stored) as T
+  } catch {
+    return initialValue
   }
+}
+
+function writeLocal<T>(key: string, value: T) {
+  window.localStorage.setItem(key, JSON.stringify(value))
+}
+
+/**
+ * App-state hook that persists to Supabase (per authenticated user) with a
+ * localStorage cache/fallback. When Supabase is not configured, or before a
+ * user has signed in, it behaves exactly like the previous localStorage store.
+ *
+ * - `userId` present + Supabase enabled: hydrate from `eventpilot_app_state`,
+ *   seeding the remote row from local/initial data on first login, and
+ *   write-through on every change.
+ * - otherwise: pure localStorage, so the app still runs fully offline.
+ */
+function useSyncedState<T>(key: string, initialValue: T, userId: string | null) {
+  const [value, setValue] = useState<T>(() => readLocal(key, initialValue))
+  const hydratedFor = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!supabase || !userId || hydratedFor.current === userId) return
+    let cancelled = false
+
+    void (async () => {
+      const { data, error } = await supabase
+        .from('eventpilot_app_state')
+        .select('value')
+        .eq('user_id', userId)
+        .eq('key', key)
+        .maybeSingle()
+      if (cancelled) return
+
+      if (data && data.value != null) {
+        setValue(data.value as T)
+        writeLocal(key, data.value)
+      } else if (!error) {
+        // No remote row yet — seed it from whatever we currently hold locally.
+        const seed = readLocal(key, initialValue)
+        await supabase
+          .from('eventpilot_app_state')
+          .upsert({ user_id: userId, key, value: seed })
+      }
+      hydratedFor.current = userId
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [key, userId, initialValue])
+
+  const setStoredValue = useCallback(
+    (nextValue: T | ((currentValue: T) => T)) => {
+      setValue((currentValue) => {
+        const resolved =
+          typeof nextValue === 'function'
+            ? (nextValue as (currentValue: T) => T)(currentValue)
+            : nextValue
+
+        writeLocal(key, resolved)
+        if (supabase && userId) {
+          void supabase
+            .from('eventpilot_app_state')
+            .upsert({ user_id: userId, key, value: resolved })
+            .then(({ error }) => {
+              if (error) console.error(`Event Pilot sync failed for ${key}:`, error.message)
+            })
+        }
+        return resolved
+      })
+    },
+    [key, userId],
+  )
 
   return [value, setStoredValue] as const
+}
+
+type AuthState = {
+  userId: string | null
+  email: string
+  role: LoginSession['role']
+  ready: boolean
+}
+
+/** Tracks the Supabase auth session and resolves the user's Event Pilot role. */
+function useSupabaseAuth(): AuthState {
+  const [session, setSession] = useState<Session | null>(null)
+  const [role, setRole] = useState<LoginSession['role']>('Client User')
+  const [ready, setReady] = useState(!isSupabaseEnabled)
+
+  useEffect(() => {
+    if (!supabase) return
+    let active = true
+    const client = supabase
+
+    // Applies a session and (asynchronously) resolves the user's role. All
+    // setState calls happen inside async callbacks, never synchronously in the
+    // effect body.
+    const applySession = (next: Session | null) => {
+      if (!active) return
+      setSession(next)
+      const uid = next?.user?.id
+      if (!uid) {
+        setRole('Client User')
+        return
+      }
+      void client
+        .from('eventpilot_profiles')
+        .select('role')
+        .eq('user_id', uid)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (
+            active &&
+            (data?.role === 'Owner Admin' || data?.role === 'Client User')
+          ) {
+            setRole(data.role)
+          }
+        })
+    }
+
+    void client.auth.getSession().then(({ data }) => {
+      applySession(data.session)
+      if (active) setReady(true)
+    })
+    const { data: sub } = client.auth.onAuthStateChange((_event, next) => {
+      applySession(next)
+    })
+
+    return () => {
+      active = false
+      sub.subscription.unsubscribe()
+    }
+  }, [])
+
+  return {
+    userId: session?.user?.id ?? null,
+    email: session?.user?.email ?? '',
+    role,
+    ready,
+  }
 }
 
 function money(value: number) {
@@ -377,13 +503,6 @@ type LoginSession = {
   role: 'Owner Admin' | 'Client User'
 }
 
-type LoginCredential = {
-  email: string
-  password: string
-  workspaceCode: string
-  role: LoginSession['role']
-}
-
 type NotificationItem = {
   id: string
   title: string
@@ -549,21 +668,6 @@ const initialAdminCredentialSettings: AdminCredentialSettings = {
   lastPasswordChange: '2026-06-05',
 }
 
-const loginCredentials: LoginCredential[] = [
-  {
-    email: 'poti@nanirand.com',
-    password: 'REDACTED-PW',
-    workspaceCode: 'nanirand',
-    role: 'Client User',
-  },
-  {
-    email: 'admin.eventpilot@nnr-solutions.com',
-    password: 'REDACTED-PW',
-    workspaceCode: 'admin',
-    role: 'Owner Admin',
-  },
-]
-
 const initialLoginSession: LoginSession = {
   authenticated: false,
   email: '',
@@ -573,30 +677,39 @@ const initialLoginSession: LoginSession = {
 function App() {
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin'
   const [activeModule, setActiveModule] = useState<ModuleId>(getModuleFromHash)
-  const [bookings, setBookings] = useLocalStorageState(
+
+  const auth = useSupabaseAuth()
+  // Offline sandbox session (used only when Supabase is not configured).
+  const [localSession, setLocalSession] = useState<LoginSession>(initialLoginSession)
+  const userId = auth.userId
+  const loginSession: LoginSession = isSupabaseEnabled
+    ? { authenticated: !!auth.userId, email: auth.email, role: auth.role }
+    : localSession
+
+  const [bookings, setBookings] = useSyncedState(
     'eventpilot.bookings.v2',
     initialBookings,
+    userId,
   )
-  const [clientCompanies, setClientCompanies] = useLocalStorageState(
+  const [clientCompanies, setClientCompanies] = useSyncedState(
     'eventpilot.admin.clients.v1',
     initialClientCompanies,
+    userId,
   )
-  const [adminPlans, setAdminPlans] = useLocalStorageState(
+  const [adminPlans, setAdminPlans] = useSyncedState(
     'eventpilot.admin.plans.v1',
     initialSaasPlans,
+    userId,
   )
-  const [expansionPacks, setExpansionPacks] = useLocalStorageState(
+  const [expansionPacks, setExpansionPacks] = useSyncedState(
     'eventpilot.admin.expansion-packs.v1',
     initialExpansionPacks,
+    userId,
   )
-  const [adminCredentialSettings, setAdminCredentialSettings] =
-    useLocalStorageState(
-      'eventpilot.admin.credentials.v1',
-      initialAdminCredentialSettings,
-    )
-  const [loginSession, setLoginSession] = useLocalStorageState(
-    'eventpilot.login.session.v1',
-    initialLoginSession,
+  const [adminCredentialSettings, setAdminCredentialSettings] = useSyncedState(
+    'eventpilot.admin.credentials.v1',
+    initialAdminCredentialSettings,
+    userId,
   )
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
   const [query, setQuery] = useState('')
@@ -830,20 +943,57 @@ function App() {
     recordSandboxAction('Sandbox reset', 'Demo bookings were restored locally.')
   }
 
-  const handleLogin = (credential: LoginCredential) => {
-    setLoginSession({
+  // Returns an error message on failure, or null on success.
+  const handleLoginSubmit = async (
+    email: string,
+    password: string,
+  ): Promise<string | null> => {
+    if (isSupabaseEnabled && supabase) {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+      if (error) return error.message
+      if (isAdminRoute) {
+        const { data: profile } = await supabase
+          .from('eventpilot_profiles')
+          .select('role')
+          .eq('user_id', data.user.id)
+          .maybeSingle()
+        if (profile?.role !== 'Owner Admin') {
+          await supabase.auth.signOut()
+          return 'Admin Console requires the EventPilot admin workspace.'
+        }
+      }
+      setActiveModule('Dashboard')
+      return null
+    }
+
+    // Offline sandbox (Supabase not configured): accept the entered identity.
+    setLocalSession({
       authenticated: true,
-      email: credential.email,
-      role: credential.role,
+      email: email.trim(),
+      role: isAdminRoute ? 'Owner Admin' : 'Client User',
     })
-    setActiveModule(isAdminRoute ? 'Dashboard' : 'Dashboard')
+    setActiveModule('Dashboard')
+    return null
   }
 
-  const handleLogout = () => {
-    setLoginSession(initialLoginSession)
+  const handleLogout = async () => {
+    if (isSupabaseEnabled && supabase) {
+      await supabase.auth.signOut()
+    } else {
+      setLocalSession(initialLoginSession)
+    }
     setQuery('')
     setStatusFilter('All')
     setActiveModule('Login')
+  }
+
+  // Wait for the Supabase session to resolve before deciding what to render,
+  // so we don't briefly flash the login screen for an already-signed-in user.
+  if (isSupabaseEnabled && !auth.ready) {
+    return <main className="login-shell" aria-busy="true" />
   }
 
   if (
@@ -854,7 +1004,7 @@ function App() {
     return (
       <LoginView
         adminCredentialSettings={adminCredentialSettings}
-        handleLogin={handleLogin}
+        onSubmit={handleLoginSubmit}
         isAdminRoute={isAdminRoute}
       />
     )
@@ -1085,28 +1235,25 @@ function App() {
 
 function LoginView({
   adminCredentialSettings,
-  handleLogin,
+  onSubmit,
   isAdminRoute,
 }: {
   adminCredentialSettings: AdminCredentialSettings
-  handleLogin: (credential: LoginCredential) => void
+  onSubmit: (email: string, password: string) => Promise<string | null>
   isAdminRoute: boolean
 }) {
-  const defaultCredential = isAdminRoute
-    ? loginCredentials.find((credential) => credential.role === 'Owner Admin')
-    : loginCredentials.find((credential) => credential.role === 'Client User')
-  const [email, setEmail] = useState(defaultCredential?.email ?? '')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [workspaceCode, setWorkspaceCode] = useState(
-    defaultCredential?.workspaceCode ?? '',
-  )
+  const [workspaceCode, setWorkspaceCode] = useState('')
   const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const passwordReady =
     password.length >=
     (isAdminRoute ? adminCredentialSettings.minimumPasswordLength : 8)
-  const loginReady = email.includes('@') && passwordReady && workspaceCode.trim()
+  const loginReady =
+    email.includes('@') && passwordReady && workspaceCode.trim() && !submitting
 
-  const submitLogin = (event: React.FormEvent<HTMLFormElement>) => {
+  const submitLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
     if (!passwordReady) {
@@ -1116,26 +1263,14 @@ function LoginView({
       return
     }
 
-    const matchedCredential = loginCredentials.find(
-      (credential) =>
-        credential.email.toLowerCase() === email.trim().toLowerCase() &&
-        credential.password === password &&
-        credential.workspaceCode.toLowerCase() ===
-          workspaceCode.trim().toLowerCase(),
-    )
-
-    if (!matchedCredential) {
-      setError('Email, password, or workspace code does not match.')
-      return
-    }
-
-    if (isAdminRoute && matchedCredential.role !== 'Owner Admin') {
-      setError('Admin Console requires the EventPilot admin workspace.')
-      return
-    }
-
     setError('')
-    handleLogin(matchedCredential)
+    setSubmitting(true)
+    const failure = await onSubmit(email, password)
+    setSubmitting(false)
+    if (failure) {
+      setError(failure)
+      return
+    }
   }
 
   return (
