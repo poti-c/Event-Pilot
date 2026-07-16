@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">EventPilot command icon</title>
+  <desc id="desc">Navy command mark with three white lines and a gold compass.</desc>
+  <defs>
+    <linearGradient id="markGradient" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#235f8f"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#markGradient)"/>
+  <path d="M70 85h114M70 128h74M70 171h114" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round"/>
+  <g transform="translate(193 193)">
+    <circle r="53" fill="#f8c768"/>
+    <circle r="37" fill="none" stroke="#0f172a" stroke-width="6" opacity="0.42"/>
+    <path d="M0-47v16M0 31v16M-47 0h16M31 0h16" fill="none" stroke="#0f172a" stroke-width="6" stroke-linecap="round" opacity="0.42"/>
+    <path d="M0-40l12 40-12 40-12-40z" fill="#0f172a" opacity="0.64" transform="rotate(45)"/>
+    <circle r="6" fill="#0f172a" opacity="0.64"/>
+  </g>
+</svg>

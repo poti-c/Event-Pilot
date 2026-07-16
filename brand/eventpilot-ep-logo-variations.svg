@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title desc">
+  <title id="title">EventPilot EP logo variations</title>
+  <desc id="desc">Five EventPilot logo variations combining E, P, and a faded gold compass.</desc>
+  <defs>
+    <linearGradient id="markGradient" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#235f8f"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg { fill: #f4f7fa; }
+      .card { fill: #ffffff; stroke: #d9e0e8; stroke-width: 2; filter: url(#shadow); }
+      .ink { fill: #0f172a; }
+      .muted { fill: #607089; }
+      .blue { fill: #235f8f; }
+      .gold { fill: #d99a2b; }
+      .white-line { fill: none; stroke: #ffffff; stroke-linecap: round; stroke-linejoin: round; }
+      .gold-line { fill: none; stroke: #d99a2b; stroke-linecap: round; stroke-linejoin: round; }
+      .title { font: 900 54px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .word { font: 850 42px Inter, Arial, sans-serif; letter-spacing: 0; }
+      .tag { font: 700 16px Inter, Arial, sans-serif; letter-spacing: 2px; }
+      .label { font: 850 24px Inter, Arial, sans-serif; }
+      .caption { font: 500 18px Inter, Arial, sans-serif; }
+      .ep { font: 900 80px Inter, Arial, sans-serif; letter-spacing: -6px; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1080"/>
+  <text x="90" y="88" class="title ink">EventPilot EP Mark Variations</text>
+  <text x="92" y="128" class="caption muted">Five cleaner ways to combine E, P, and a faded gold compass.</text>
+
+  <g id="compass" opacity="0.34">
+    <circle r="46" fill="none" stroke="#d99a2b" stroke-width="5"/>
+    <circle r="24" fill="none" stroke="#d99a2b" stroke-width="3"/>
+    <path d="M0-54v18M0 36v18M-54 0h18M36 0h18" class="gold-line" stroke-width="5"/>
+    <path d="M0-42l12 42-12 42-12-42z" class="gold" transform="rotate(60)"/>
+    <circle r="5" class="gold"/>
+  </g>
+
+  <g transform="translate(90 185)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">1. Split EP Monogram</text>
+    <g transform="translate(54 95)">
+      <rect width="132" height="132" rx="30" fill="url(#markGradient)"/>
+      <use href="#compass" x="66" y="66"/>
+      <path d="M38 37h43M38 66h34M38 95h43M38 37v58" class="white-line" stroke-width="9"/>
+      <path d="M91 37h18c24 0 24 29 0 29H91v29" class="white-line" stroke-width="9"/>
+    </g>
+    <text x="218" y="166" class="word ink">EventPilot</text>
+    <text x="221" y="198" class="tag muted">CLEAR EP INITIALS</text>
+    <text x="34" y="304" class="caption muted">Most readable: E and P are separate but balanced inside one mark.</text>
+  </g>
+
+  <g transform="translate(645 185)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">2. E Lines + P Orbit</text>
+    <g transform="translate(54 95)">
+      <rect width="132" height="132" rx="30" fill="url(#markGradient)"/>
+      <use href="#compass" x="66" y="66"/>
+      <path d="M38 38h50M38 66h37M38 94h50M38 38v56" class="white-line" stroke-width="10"/>
+      <path d="M85 38c42 0 42 56 0 56" class="white-line" stroke-width="10"/>
+    </g>
+    <text x="218" y="166" class="word ink">EventPilot</text>
+    <text x="221" y="198" class="tag muted">SOFTER LETTERFORM</text>
+    <text x="34" y="304" class="caption muted">Keeps the 3-line E and uses the P as a clean outer curve.</text>
+  </g>
+
+  <g transform="translate(1200 185)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">3. Negative-Space P</text>
+    <g transform="translate(54 95)">
+      <rect width="132" height="132" rx="30" fill="url(#markGradient)"/>
+      <use href="#compass" x="66" y="66"/>
+      <path d="M36 36h58M36 66h37M36 96h58M36 36v60" class="white-line" stroke-width="10"/>
+      <path d="M82 36h15c29 0 29 30 0 30H82" class="white-line" stroke-width="10"/>
+      <circle cx="96" cy="51" r="8" fill="url(#markGradient)" opacity="0.92"/>
+    </g>
+    <text x="218" y="166" class="word ink">EventPilot</text>
+    <text x="221" y="198" class="tag muted">COMPACT SAAS MARK</text>
+    <text x="34" y="304" class="caption muted">Tight app-icon style, useful at small sizes.</text>
+  </g>
+
+  <g transform="translate(365 600)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">4. Lettermark + Compass</text>
+    <g transform="translate(54 95)">
+      <rect width="132" height="132" rx="30" fill="url(#markGradient)"/>
+      <use href="#compass" x="66" y="66"/>
+      <text x="27" y="88" class="ep" fill="#ffffff">EP</text>
+    </g>
+    <text x="218" y="166" class="word ink">EventPilot</text>
+    <text x="221" y="198" class="tag muted">BOLDEST BRAND READ</text>
+    <text x="34" y="304" class="caption muted">Most straightforward logo: strong EP with the compass behind.</text>
+  </g>
+
+  <g transform="translate(925 600)">
+    <rect class="card" width="510" height="360" rx="18"/>
+    <text x="34" y="54" class="label ink">5. Pilot Badge</text>
+    <g transform="translate(54 95)">
+      <rect width="132" height="132" rx="30" fill="#ffffff" stroke="#0f172a" stroke-width="7"/>
+      <use href="#compass" x="66" y="66" opacity="0.75"/>
+      <path d="M39 39h44M39 66h32M39 93h44M39 39v54" fill="none" stroke="#0f172a" stroke-width="10" stroke-linecap="round"/>
+      <path d="M90 39h14c27 0 27 27 0 27H90v27" fill="none" stroke="#235f8f" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="218" y="166" class="word ink">EventPilot</text>
+    <text x="221" y="198" class="tag muted">PREMIUM BADGE</text>
+    <text x="34" y="304" class="caption muted">More premium and printable, less app-icon heavy.</text>
+  </g>
+</svg>
