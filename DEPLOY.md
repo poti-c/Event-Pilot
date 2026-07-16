@@ -1,66 +1,53 @@
-# Deploying Event Pilot to GoDaddy
+# Deploying Event Pilot
 
-Event Pilot is a static single-page app (Vite build) backed by Supabase. There is
-no Node server to run in production — you upload the built files to GoDaddy's
-web hosting and the app talks to Supabase directly from the browser.
+Event Pilot is hosted the same way as the Kaizen System: a static Vite build
+served by **GitHub Pages** at a custom subdomain, with **GoDaddy managing DNS**.
+Backend (auth + data) is Supabase, called directly from the browser.
 
-## 1. Build the app
+- **Live URL:** https://eventpilot.nnr-solutions.com
+- **Repo:** `poti-c/Event-Pilot` (must be **public** — GitHub Pages on the Free
+  plan only serves public repos)
+- **Build/deploy:** `.github/workflows/deploy.yml` runs on every push to
+  `master`: type-check → `vite build` → publish `dist/` to the `gh-pages` branch,
+  which GitHub Pages serves.
 
-```sh
-npm install        # first time only
-npm run build
-```
+## How it deploys (automatic)
 
-This produces a `dist/` folder. The Supabase URL and publishable key from
-`.env.local` are baked into the bundle at build time (the publishable key is
-safe to expose in client code — access is controlled by row-level security).
+Push to `master` → GitHub Actions builds and deploys. No manual upload.
 
-> Rebuild and re-upload whenever you change the code or the `.env.local` values.
-
-## 2. Upload `dist/` to GoDaddy
-
-Use **cPanel → File Manager** (or an FTP client such as FileZilla):
-
-1. Go to your domain's document root — usually **`public_html`** (or
-   `public_html/<subfolder>` if the app lives under a path).
-2. Upload the **contents of `dist/`** — i.e. `index.html`, the `assets/`
-   folder, `brand/`, `favicon.svg`, **and the hidden `.htaccess` file**.
-   Upload the files *inside* `dist/`, not the `dist` folder itself.
-3. **The `.htaccess` file is critical and hidden.** In cPanel File Manager click
-   **Settings → Show Hidden Files (dotfiles)** before uploading, or in FileZilla
-   enable *Server → Force showing hidden files*. Without it, the `/admin` portal
-   route returns a 404.
-
-That's it — visit your domain and the app loads.
-
-## Why `.htaccess` is needed
-
-The main app navigates with hash routes (`#Dashboard`, `#BEOs`, …) which need no
-server config. But the admin portal uses a real path (`/admin`), so Apache must
-serve `index.html` for any path that isn't a real file. The included `.htaccess`
-does exactly that (plus sensible caching for fingerprinted assets).
-
-## Deploying under a subfolder (not the root domain)
-
-The build assumes it is served from the domain root (`/`). If you deploy to
-`https://yourdomain.com/eventpilot/` instead, set the base path before building:
+The Supabase URL + publishable key are injected at build time from **repo
+secrets** (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`). Set/rotate them with:
 
 ```sh
-# vite.config.ts → defineConfig({ base: '/eventpilot/', plugins: [react()] })
-npm run build
+gh secret set VITE_SUPABASE_URL --repo poti-c/Event-Pilot --body "https://uwswaeazowhtrpktakhx.supabase.co"
+gh secret set VITE_SUPABASE_ANON_KEY --repo poti-c/Event-Pilot --body "<publishable key>"
 ```
 
-and change `RewriteBase /` to `RewriteBase /eventpilot/` in `public/.htaccess`.
+The publishable key is safe to expose in client code; data access is controlled
+by Supabase row-level security.
 
-## Supabase notes
+## One-time setup
 
-- **Data & auth** are served by the Na Nirand Supabase project. No server-side
-  secrets are deployed — only the public URL + publishable key.
-- **Accounts:** sign in with a real Supabase user. Two are provisioned:
-  - `admin.eventpilot@nnr-solutions.com` — Owner Admin (can access `/admin`)
-  - `poti@nanirand.com` — Client User (its password is the one already set on
-    that Supabase account, unchanged by this migration)
-- **Custom domain in Supabase Auth:** if you later add password-reset or
-  magic-link emails, add your GoDaddy domain to
-  *Supabase → Authentication → URL Configuration* (Site URL + redirect allowlist).
-  Plain email/password sign-in used today needs no change.
+1. **Repo public + Pages:** repo is public; Pages source = `gh-pages` branch.
+2. **CNAME file:** `public/CNAME` contains `eventpilot.nnr-solutions.com` and is
+   copied into every build, so Pages keeps the custom domain across deploys.
+3. **SPA fallback:** the workflow copies `index.html` → `404.html` so the
+   `/admin` path route boots the app instead of returning a 404.
+4. **GoDaddy DNS** (in the nnr-solutions.com DNS zone), identical to Kaizen:
+
+   | Type  | Name         | Value             | TTL |
+   |-------|--------------|-------------------|-----|
+   | CNAME | `eventpilot` | `poti-c.github.io`| 1 hr|
+
+   After DNS propagates, GitHub issues a Let's Encrypt certificate automatically
+   and HTTPS is enforced.
+
+## Supabase accounts
+
+- `admin.eventpilot@nnr-solutions.com` — Owner Admin (can access `/admin`)
+- `poti@nanirand.com` — Client User (password unchanged by this migration; it's
+  the one already set on that shared Supabase account)
+
+If you later add password-reset / magic-link emails, add
+`https://eventpilot.nnr-solutions.com` to *Supabase → Authentication → URL
+Configuration*. Plain email/password sign-in needs no change.
