@@ -683,6 +683,15 @@ export const venues: Venue[] = [
     nextBooking: 'Royal Orchid Wedding',
   },
   {
+    id: 'VEN-05',
+    name: 'Executive Floor',
+    capacity: 40,
+    setupStyles: ['Boardroom', 'U-Shape', 'Private dining'],
+    status: 'Inquiry hold',
+    utilization: 38,
+    nextBooking: 'Aviation Partners Board Retreat',
+  },
+  {
     id: 'VEN-NN-01',
     name: 'The Garden of Eternal Love',
     capacity: null,

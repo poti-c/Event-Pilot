@@ -18,6 +18,7 @@ import {
   FileText,
   Filter,
   LayoutDashboard,
+  LogOut,
   MapPinned,
   Plus,
   ReceiptText,
@@ -46,7 +47,13 @@ import {
   tasks,
   venues,
 } from './data'
-import type { Account, BookingStatus, EventBooking, PaymentStatus } from './data'
+import type {
+  Account,
+  BookingStatus,
+  EventBooking,
+  PaymentStatus,
+  PropertyProfile,
+} from './data'
 
 type ModuleId =
   | 'Dashboard'
@@ -140,12 +147,21 @@ function writeLocal<T>(key: string, value: T) {
  * - otherwise: pure localStorage, so the app still runs fully offline.
  */
 function useSyncedState<T>(key: string, initialValue: T, userId: string | null) {
-  const [value, setValue] = useState<T>(() => readLocal(key, initialValue))
+  // Scope the local cache per user in cloud mode so one account's data can never
+  // seed into, or be shown to, another account on a shared browser. Offline mode
+  // (no Supabase / no userId) keeps the bare key so existing sandbox data loads.
+  const scopedKey = supabase && userId ? `${key}::${userId}` : key
+  const [value, setValue] = useState<T>(() => readLocal(scopedKey, initialValue))
   const hydratedFor = useRef<string | null>(null)
 
   useEffect(() => {
     if (!supabase || !userId || hydratedFor.current === userId) return
     let cancelled = false
+
+    // A (different) user just signed in — drop any state still held from a
+    // previous account before hydrating, so their data is never displayed or
+    // written under this user.
+    setValue(readLocal(scopedKey, initialValue))
 
     void (async () => {
       const { data, error } = await supabase
@@ -158,13 +174,14 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
 
       if (data && data.value != null) {
         setValue(data.value as T)
-        writeLocal(key, data.value)
+        writeLocal(scopedKey, data.value)
       } else if (!error) {
-        // No remote row yet — seed it from whatever we currently hold locally.
-        const seed = readLocal(key, initialValue)
+        // No remote row yet — seed from the pristine initial value, never from
+        // another user's cached data.
+        writeLocal(scopedKey, initialValue)
         await supabase
           .from('eventpilot_app_state')
-          .upsert({ user_id: userId, key, value: seed })
+          .upsert({ user_id: userId, key, value: initialValue })
       }
       hydratedFor.current = userId
     })()
@@ -172,7 +189,7 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
     return () => {
       cancelled = true
     }
-  }, [key, userId, initialValue])
+  }, [key, scopedKey, userId, initialValue])
 
   const setStoredValue = useCallback(
     (nextValue: T | ((currentValue: T) => T)) => {
@@ -182,8 +199,11 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
             ? (nextValue as (currentValue: T) => T)(currentValue)
             : nextValue
 
-        writeLocal(key, resolved)
-        if (supabase && userId) {
+        writeLocal(scopedKey, resolved)
+        // Only write through to the cloud once this user's remote state has
+        // hydrated, so a pre-hydration render can't clobber their row with
+        // defaults or another account's leftover values.
+        if (supabase && userId && hydratedFor.current === userId) {
           void supabase
             .from('eventpilot_app_state')
             .upsert({ user_id: userId, key, value: resolved })
@@ -194,7 +214,7 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
         return resolved
       })
     },
-    [key, userId],
+    [key, scopedKey, userId],
   )
 
   return [value, setStoredValue] as const
@@ -266,6 +286,12 @@ function useSupabaseAuth(): AuthState {
   }
 }
 
+function timeOfDayGreeting(hour: number) {
+  if (hour < 12) return 'Good morning'
+  if (hour < 18) return 'Good afternoon'
+  return 'Good evening'
+}
+
 function money(value: number) {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -276,6 +302,8 @@ function money(value: number) {
 
 function compactMoney(value: number) {
   if (value >= 1_000_000) return `THB ${(value / 1_000_000).toFixed(2)}M`
+  // Values that round up to 1000K (>= 999,500) should read as millions, not "1000K".
+  if (value >= 999_500) return `THB ${(value / 1_000_000).toFixed(2)}M`
   if (value >= 1_000) return `THB ${(value / 1_000).toFixed(0)}K`
   return money(value)
 }
@@ -368,10 +396,14 @@ function bookingTimesOverlap(
   endB: string,
 ) {
   const aStart = minutesFromTime(startA)
-  const aEnd = minutesFromTime(endA)
+  let aEnd = minutesFromTime(endA)
   const bStart = minutesFromTime(startB)
-  const bEnd = minutesFromTime(endB)
+  let bEnd = minutesFromTime(endB)
   if (aStart === null || aEnd === null || bStart === null || bEnd === null) return false
+  // An end at or before its start means the event runs past midnight; extend it
+  // by a day so the overlap test doesn't collapse (e.g. 20:00-01:00 vs 21:00-23:00).
+  if (aEnd <= aStart) aEnd += 1440
+  if (bEnd <= bStart) bEnd += 1440
   return aStart < bEnd && bStart < aEnd
 }
 
@@ -711,6 +743,11 @@ function App() {
     initialAdminCredentialSettings,
     userId,
   )
+  const [propertyProfile, setPropertyProfile] = useSyncedState(
+    'eventpilot.property-profile.v1',
+    naNirandProfile,
+    userId,
+  )
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
@@ -798,7 +835,10 @@ function App() {
     0,
   )
   const forecastRevenue = bookings.reduce(
-    (sum, booking) => sum + booking.forecastRevenue,
+    (sum, booking) =>
+      booking.status === 'Lost' || booking.status === 'Cancelled'
+        ? sum
+        : sum + booking.forecastRevenue,
     0,
   )
   const pipelineRevenue = opportunities.reduce(
@@ -839,7 +879,7 @@ function App() {
 
   const recordSandboxAction = (title: string, detail: string) => {
     const action: SandboxAction = {
-      id: `ACT-${Date.now()}`,
+      id: `ACT-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title,
       detail,
       time: new Intl.DateTimeFormat('en-US', {
@@ -874,10 +914,13 @@ function App() {
         return {
           ...booking,
           status: nextStatus,
+          // Realized revenue only exists while Confirmed/Completed. Recompute it
+          // from the target status in both directions so a fall-back clears it
+          // (otherwise the "confirmed revenue" KPI stays overstated).
           revenue:
             nextStatus === 'Confirmed' || nextStatus === 'Completed'
               ? booking.forecastRevenue
-              : booking.revenue,
+              : 0,
           paymentStatus:
             nextStatus === 'Confirmed' && booking.paymentStatus === 'Unpaid'
               ? 'Deposit due'
@@ -931,8 +974,12 @@ function App() {
   }
 
   const resetSandbox = () => {
+    // Be explicit that in cloud mode this overwrites the signed-in account's
+    // saved bookings, not just a throwaway local sandbox.
     const confirmed = window.confirm(
-      'Reset all local demo bookings to the original sandbox data?',
+      isSupabaseEnabled
+        ? 'This will REPLACE all of your saved bookings with the original demo data and cannot be undone. Continue?'
+        : 'Reset all local demo bookings to the original sandbox data?',
     )
     if (!confirmed) return
     setBookings(initialBookings)
@@ -1058,9 +1105,20 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <p>Storage mode</p>
-          <strong>{isSupabaseEnabled ? 'Supabase cloud' : 'Browser local data'}</strong>
-          <span>{isSupabaseEnabled ? 'Synced to your account' : 'Offline sandbox'}</span>
+          <p>{timeOfDayGreeting(new Date().getHours())}</p>
+          <button
+            className="sidebar-account"
+            onClick={() => setActiveModule('Settings')}
+            title="Open settings"
+            type="button"
+          >
+            <Settings size={15} />
+            <span>{loginSession.email || 'Account'}</span>
+          </button>
+          <button className="sidebar-signout" onClick={handleLogout} type="button">
+            <LogOut size={15} />
+            Sign out
+          </button>
         </div>
       </aside>
 
@@ -1091,9 +1149,6 @@ function App() {
             >
               <Bell size={18} />
               {notificationItems.length > 0 && <span>{notificationItems.length}</span>}
-            </button>
-            <button className="secondary-action" onClick={handleLogout} type="button">
-              Sign out
             </button>
             <a
               className="primary-action"
@@ -1225,12 +1280,72 @@ function App() {
             />
           )}
 
-          {activeModule === 'Settings' && <SettingsView resetSandbox={resetSandbox} />}
+          {activeModule === 'Settings' && (
+            <SettingsView
+              propertyProfile={propertyProfile}
+              resetSandbox={resetSandbox}
+              setPropertyProfile={setPropertyProfile}
+            />
+          )}
         </main>
         {toast && <div className="toast" role="status">{toast}</div>}
       </div>
     </div>
   )
+}
+
+type LoginLang = 'en' | 'th'
+
+const LOGIN_COPY: Record<
+  LoginLang,
+  {
+    promoPrefix: string
+    promoSuffix: string
+    eyebrow: string
+    title: string
+    subtitle: string
+    email: string
+    password: string
+    workspaceCode: string
+    required: string
+    clientPasswordPlaceholder: string
+    adminPasswordPlaceholder: string
+    submit: string
+    passwordTooShort: (min: number) => string
+  }
+> = {
+  en: {
+    promoPrefix: 'Visit',
+    promoSuffix: 'and let us be a part of your business solution.',
+    eyebrow: 'Secure workspace access',
+    title: 'Sign in to EventPilot',
+    subtitle:
+      'Enter your workspace credentials to access bookings, BEOs, client companies, subscription controls, and admin settings.',
+    email: 'Email address',
+    password: 'Password',
+    workspaceCode: 'Workspace code',
+    required: 'Required',
+    clientPasswordPlaceholder: 'Client password',
+    adminPasswordPlaceholder: 'Admin password',
+    submit: 'Enter EventPilot',
+    passwordTooShort: (min) => `Password must be at least ${min} characters.`,
+  },
+  th: {
+    promoPrefix: 'เยี่ยมชม',
+    promoSuffix: 'และให้เราเป็นส่วนหนึ่งของโซลูชันธุรกิจของคุณ',
+    eyebrow: 'เข้าถึงพื้นที่ทำงานอย่างปลอดภัย',
+    title: 'เข้าสู่ระบบ EventPilot',
+    subtitle:
+      'กรอกข้อมูลรับรองพื้นที่ทำงานของคุณเพื่อเข้าถึงการจอง BEO บริษัทลูกค้า การควบคุมการสมัครสมาชิก และการตั้งค่าผู้ดูแลระบบ',
+    email: 'อีเมล',
+    password: 'รหัสผ่าน',
+    workspaceCode: 'รหัสพื้นที่ทำงาน',
+    required: 'จำเป็น',
+    clientPasswordPlaceholder: 'รหัสผ่านลูกค้า',
+    adminPasswordPlaceholder: 'รหัสผ่านผู้ดูแล',
+    submit: 'เข้าสู่ EventPilot',
+    passwordTooShort: (min) => `รหัสผ่านต้องมีอย่างน้อย ${min} ตัวอักษร`,
+  },
 }
 
 function LoginView({
@@ -1247,9 +1362,12 @@ function LoginView({
   const [workspaceCode, setWorkspaceCode] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const passwordReady =
-    password.length >=
-    (isAdminRoute ? adminCredentialSettings.minimumPasswordLength : 8)
+  const [lang, setLang] = useState<LoginLang>('en')
+  const t = LOGIN_COPY[lang]
+  const minPasswordLength = isAdminRoute
+    ? adminCredentialSettings.minimumPasswordLength
+    : 8
+  const passwordReady = password.length >= minPasswordLength
   const loginReady =
     email.includes('@') && passwordReady && workspaceCode.trim() && !submitting
 
@@ -1257,9 +1375,7 @@ function LoginView({
     event.preventDefault()
 
     if (!passwordReady) {
-      setError(
-        `Password must be at least ${adminCredentialSettings.minimumPasswordLength} characters.`,
-      )
+      setError(t.passwordTooShort(minPasswordLength))
       return
     }
 
@@ -1282,26 +1398,41 @@ function LoginView({
             src="/brand/eventpilot-command-mark-final.svg"
           />
         </div>
-        <div className="login-signal-grid">
-          <span>BEO control</span>
-          <span>CRM pipeline</span>
-          <span>Calendar ops</span>
-          <span>Tenant admin</span>
-        </div>
+        <p className="login-promo">
+          {t.promoPrefix}{' '}
+          <a href="https://nnr-solutions.com" target="_blank" rel="noreferrer">
+            nnr-solutions.com
+          </a>{' '}
+          {t.promoSuffix}
+        </p>
       </section>
 
       <section className="login-panel">
+        <div className="login-lang-switch" role="group" aria-label="Language">
+          <button
+            type="button"
+            className={lang === 'en' ? 'is-active' : ''}
+            onClick={() => setLang('en')}
+          >
+            EN
+          </button>
+          <button
+            type="button"
+            className={lang === 'th' ? 'is-active' : ''}
+            onClick={() => setLang('th')}
+          >
+            ไทย
+          </button>
+        </div>
+
         <div>
-          <p className="eyebrow">Secure workspace access</p>
-          <h1>Sign in to EventPilot</h1>
-          <p>
-            Enter your workspace credentials to access bookings, BEOs, client
-            companies, subscription controls, and admin settings.
-          </p>
+          <p className="eyebrow">{t.eyebrow}</p>
+          <h1>{t.title}</h1>
+          <p>{t.subtitle}</p>
         </div>
 
         <form className="login-form" onSubmit={submitLogin}>
-          <FormField label="Email address" required>
+          <FormField label={t.email} requiredLabel={t.required} required>
             <input
               autoComplete="email"
               onChange={(event) => setEmail(event.target.value)}
@@ -1310,17 +1441,17 @@ function LoginView({
               value={email}
             />
           </FormField>
-          <FormField label="Password" required>
+          <FormField label={t.password} requiredLabel={t.required} required>
             <input
               autoComplete="current-password"
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={isAdminRoute ? 'Admin password' : 'Client password'}
+              placeholder={isAdminRoute ? t.adminPasswordPlaceholder : t.clientPasswordPlaceholder}
               required
               type="password"
               value={password}
             />
           </FormField>
-          <FormField label="Workspace code" required>
+          <FormField label={t.workspaceCode} requiredLabel={t.required} required>
             <input
               onChange={(event) => setWorkspaceCode(event.target.value)}
               required
@@ -1328,29 +1459,11 @@ function LoginView({
             />
           </FormField>
 
-          <div className="login-policy-grid">
-            <span className={passwordReady ? 'policy-ready' : ''}>
-              {isAdminRoute
-                ? `${adminCredentialSettings.minimumPasswordLength}+ character policy`
-                : 'Client workspace'}
-            </span>
-            <span
-              className={
-                adminCredentialSettings.requireNewDeviceEmailVerification
-                  ? 'policy-ready'
-                  : ''
-              }
-            >
-              New-device email check
-            </span>
-            <span>{adminCredentialSettings.trustedDeviceDays} day trusted device</span>
-          </div>
-
           {error && <p className="login-error">{error}</p>}
 
           <button className="primary-action login-submit" disabled={!loginReady} type="submit">
             <ShieldCheck size={17} />
-            Enter EventPilot
+            {t.submit}
           </button>
         </form>
       </section>
@@ -1491,7 +1604,9 @@ function NewBookingView({
     }
 
     const timestamp = Date.now()
-    const id = `BKG-${String(timestamp).slice(-5)}`
+    // Random suffix so two bookings created within the same 100,000ms window can't
+    // collide on id / beoNumber (which would produce duplicate React keys).
+    const id = `BKG-${String(timestamp).slice(-5)}${Math.random().toString(36).slice(2, 5)}`
     const booking: EventBooking = {
       id,
       eventName: form.eventName.trim(),
@@ -1886,16 +2001,18 @@ function FormField({
   children,
   label,
   required,
+  requiredLabel = 'Required',
 }: {
   children: React.ReactNode
   label: string
   required?: boolean
+  requiredLabel?: string
 }) {
   return (
     <label className="form-field">
       <span>
         {label}
-        {required && <em>Required</em>}
+        {required && <em>{requiredLabel}</em>}
       </span>
       {children}
     </label>
@@ -1921,6 +2038,19 @@ function DashboardView({
 }) {
   const todayKey = toDateKey(new Date())
   const todayBookings = bookings.filter((booking) => booking.date === todayKey)
+  // Today and future events, soonest first, excluding closed-out deals — so the
+  // panel reflects what is actually coming up rather than an arbitrary slice.
+  const upcomingBookings = bookings
+    .filter(
+      (booking) =>
+        booking.date >= todayKey &&
+        booking.status !== 'Lost' &&
+        booking.status !== 'Cancelled',
+    )
+    .sort((a, b) => a.date.localeCompare(b.date))
+  // Fall back to the most recent events when nothing upcoming remains, so the
+  // panel is never empty on stale demo data.
+  const eventFeed = (upcomingBookings.length ? upcomingBookings : [...bookings].sort((a, b) => b.date.localeCompare(a.date))).slice(0, 5)
   const tentativeHolds = bookings.filter((booking) => booking.status === 'Tentative')
   const unpaidInvoices = bookings.filter((booking) =>
     ['Unpaid', 'Deposit due', 'Partial'].includes(booking.paymentStatus),
@@ -1963,7 +2093,7 @@ function DashboardView({
             title="Today and upcoming operations"
           />
           <div className="event-list">
-            {bookings.slice(0, 5).map((booking) => (
+            {eventFeed.map((booking) => (
               <button
                 className="event-row"
                 key={booking.id}
@@ -2948,7 +3078,7 @@ function ProductsView() {
           </div>
           <p>{product.description}</p>
           <div className="resource-meta">
-            <span>{priceLabel(product.price)}</span>
+            <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
             <span>{product.unit}</span>
             <span>{product.availability}</span>
           </div>
@@ -3201,7 +3331,7 @@ function AdminConsoleView({
   }
 
   const addExpansionPack = () => {
-    const id = `PACK-${String(Date.now()).slice(-5)}`
+    const id = `PACK-${String(Date.now()).slice(-5)}${Math.random().toString(36).slice(2, 5)}`
     const nextPack: ExpansionPack = {
       id,
       name: 'New expansion pack',
@@ -3217,7 +3347,7 @@ function AdminConsoleView({
   }
 
   const addClientCompany = () => {
-    const id = `CLIENT-${String(Date.now()).slice(-5)}`
+    const id = `CLIENT-${String(Date.now()).slice(-5)}${Math.random().toString(36).slice(2, 5)}`
     const nextClient: ClientCompany = {
       id,
       companyName: 'New client company',
@@ -3952,24 +4082,148 @@ function AdminConsoleView({
   )
 }
 
-function SettingsView({ resetSandbox }: { resetSandbox: () => void }) {
+function SettingsView({
+  propertyProfile,
+  resetSandbox,
+  setPropertyProfile,
+}: {
+  propertyProfile: PropertyProfile
+  resetSandbox: () => void
+  setPropertyProfile: (value: PropertyProfile) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<PropertyProfile>(propertyProfile)
+
+  const startEditing = () => {
+    setDraft(propertyProfile)
+    setEditing(true)
+  }
+
+  const saveProfile = () => {
+    setPropertyProfile({
+      ...draft,
+      name: draft.name.trim() || propertyProfile.name,
+      address: draft.address.trim(),
+      lineOfficial: draft.lineOfficial.trim(),
+    })
+    setEditing(false)
+  }
+
   return (
     <div className="page-stack">
       <section className="panel">
         <div className="property-profile">
-          <div>
-            <p className="eyebrow">Property profile</p>
-            <h2>{naNirandProfile.name}</h2>
+          <div className="property-profile-head">
+            <div>
+              <p className="eyebrow">Property profile</p>
+              {editing ? (
+                <input
+                  aria-label="Property name"
+                  className="profile-name-input"
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, name: event.target.value }))
+                  }
+                  value={draft.name}
+                />
+              ) : (
+                <h2>{propertyProfile.name}</h2>
+              )}
+            </div>
+            {editing ? (
+              <div className="profile-actions">
+                <button
+                  className="secondary-action"
+                  onClick={() => setEditing(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button className="primary-action" onClick={saveProfile} type="button">
+                  <CheckCircle2 size={16} />
+                  Save changes
+                </button>
+              </div>
+            ) : (
+              <button className="secondary-action" onClick={startEditing} type="button">
+                Edit
+              </button>
+            )}
           </div>
-          <div className="profile-grid">
-            <Detail label="Address" value={naNirandProfile.address} />
-            <Detail label="Phone" value={naNirandProfile.phones.join(', ')} />
-            <Detail
-              label="Email routing"
-              value={`Events ${naNirandProfile.emails.events} | Reservations ${naNirandProfile.emails.reservations} | General ${naNirandProfile.emails.general}`}
-            />
-            <Detail label="Line official" value={naNirandProfile.lineOfficial} />
-          </div>
+
+          {editing ? (
+            <div className="profile-edit-grid">
+              <FormField label="Address">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, address: event.target.value }))
+                  }
+                  value={draft.address}
+                />
+              </FormField>
+              <FormField label="Phone (comma separated)">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      phones: splitList(event.target.value),
+                    }))
+                  }
+                  value={draft.phones.join(', ')}
+                />
+              </FormField>
+              <FormField label="Events email">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      emails: { ...current.emails, events: event.target.value.trim() },
+                    }))
+                  }
+                  value={draft.emails.events}
+                />
+              </FormField>
+              <FormField label="Reservations email">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      emails: { ...current.emails, reservations: event.target.value.trim() },
+                    }))
+                  }
+                  value={draft.emails.reservations}
+                />
+              </FormField>
+              <FormField label="General email">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      emails: { ...current.emails, general: event.target.value.trim() },
+                    }))
+                  }
+                  value={draft.emails.general}
+                />
+              </FormField>
+              <FormField label="Line official">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, lineOfficial: event.target.value }))
+                  }
+                  value={draft.lineOfficial}
+                />
+              </FormField>
+            </div>
+          ) : (
+            <div className="profile-grid">
+              <Detail label="Address" value={propertyProfile.address} />
+              <Detail label="Phone" value={propertyProfile.phones.join(', ')} />
+              <Detail
+                label="Email routing"
+                value={`Events ${propertyProfile.emails.events} | Reservations ${propertyProfile.emails.reservations} | General ${propertyProfile.emails.general}`}
+              />
+              <Detail label="Line official" value={propertyProfile.lineOfficial} />
+            </div>
+          )}
         </div>
       </section>
 
@@ -4171,7 +4425,7 @@ function ReportBar({
   max: number
   value: number
 }) {
-  const width = Math.max(8, Math.round((value / max) * 100))
+  const width = max > 0 ? Math.max(8, Math.round((value / max) * 100)) : 8
 
   return (
     <div className="report-bar">
