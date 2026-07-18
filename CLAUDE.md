@@ -31,8 +31,16 @@ Use `npm run typecheck`, `npm run lint`, and `npm run build` when validating cha
 
 ## Backend & auth (Supabase)
 
-- Login uses real Supabase Auth (`signInWithPassword`). Roles (`Owner Admin` /
-  `Client User`) come from the `eventpilot_profiles` table.
+- Login uses real Supabase Auth (`signInWithPassword`). The login page has three
+  tabs for the authority tiers (`top_management` / `manager` / `staff`), which
+  come from the `eventpilot_profiles` table. Sign-in is rejected when the
+  account's tier does not match the selected tab.
+- Staff sign in with a workspace code + username; the app derives a synthetic
+  auth email `<username>@<workspace-code>.staff.eventpilot.internal`. The other
+  two tiers sign in with email + password.
+- Top Management can edit every user's tier from Settings. RLS lets them
+  read/update all profiles, and a database trigger blocks role changes by
+  anyone else and refuses to demote the last Top Management account.
 - App state persists per-user to the `eventpilot_app_state` table (one JSON row
   per storage key), guarded by row-level security. `useSyncedState` in
   `App.tsx` hydrates from Supabase, seeds on first login, and writes through.
@@ -40,6 +48,9 @@ Use `npm run typecheck`, `npm run lint`, and `npm run build` when validating cha
   localStorage mode, so `npm run dev` works with no backend.
 - Backend lives in the shared "Na Nirand" Supabase project; all Event Pilot
   tables are `eventpilot_`-prefixed to stay isolated from other apps there.
+- Schema is version-controlled in `supabase/migrations/` (see
+  `supabase/README.md`). Those files are already applied to the live project —
+  do not re-run them against it.
 
 ## Deploy
 
