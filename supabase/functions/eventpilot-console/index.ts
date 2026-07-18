@@ -64,6 +64,13 @@ function cleanStr(value: unknown) {
   return trimmed || null
 }
 
+/** Coerces a numeric field, treating blank/garbage as "not set" rather than 0. */
+function numOrNull(value: unknown) {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
 async function sha256(str: string) {
   return b64url(await crypto.subtle.digest('SHA-256', enc.encode(str)))
 }
@@ -317,6 +324,90 @@ Deno.serve(async (req) => {
     })
     if (error) return json({ error: error.message }, 400)
     await audit('change_password', { username: actor }, ip, true, actor)
+    return json({ ok: true })
+  }
+
+  // --- Client roster -------------------------------------------------------
+  // The console's Clients tab reads and writes the shared
+  // eventpilot_client_companies table, so every operator sees one roster.
+
+  if (action === 'list_clients') {
+    const { data, error } = await admin
+      .from('eventpilot_client_companies')
+      .select('*')
+      .order('created_at', { ascending: false })
+    if (error) return json({ error: error.message }, 400)
+    return json({ clients: data ?? [] })
+  }
+
+  if (action === 'upsert_client') {
+    const client = (body.client ?? {}) as Record<string, unknown>
+    const name = cleanStr(client.name)
+    if (!name) return json({ error: 'Company name is required.' }, 400)
+
+    // Whitelist the writable columns: never spread client input straight into
+    // the table, or a caller could set created_at/id at will.
+    const row: Record<string, unknown> = {
+      name,
+      name_th: cleanStr(client.name_th),
+      property_type: cleanStr(client.property_type),
+      plan: cleanStr(client.plan),
+      account_status: cleanStr(client.account_status) ?? 'active',
+      contact_name: cleanStr(client.contact_name),
+      contact_email: cleanStr(client.contact_email),
+      contact_phone: cleanStr(client.contact_phone),
+      tax_id: cleanStr(client.tax_id),
+      office_type: cleanStr(client.office_type) ?? 'head_office',
+      branch_code: cleanStr(client.branch_code),
+      billing_address: client.billing_address ?? {},
+      allowed_users: numOrNull(client.allowed_users),
+      active_users: numOrNull(client.active_users) ?? 0,
+      booking_limit: numOrNull(client.booking_limit),
+      renewal_date: cleanStr(client.renewal_date),
+      support_owner: cleanStr(client.support_owner),
+      notes: cleanStr(client.notes),
+      updated_at: new Date().toISOString(),
+    }
+
+    const id = cleanStr(client.id)
+    const query = id
+      ? admin.from('eventpilot_client_companies').update(row).eq('id', id).select('*').maybeSingle()
+      : admin.from('eventpilot_client_companies').insert(row).select('*').maybeSingle()
+
+    const { data, error } = await query
+    if (error) {
+      await audit('upsert_client', { name, error: error.message }, ip, false, actor)
+      return json({ error: error.message }, 400)
+    }
+    await audit('upsert_client', { id: data?.id, name, created: !id }, ip, true, actor)
+    return json({ client: data })
+  }
+
+  if (action === 'delete_client') {
+    const id = cleanStr(body.id)
+    if (!id) return json({ error: 'Client id is required.' }, 400)
+
+    // Documents reference the client, but they snapshot the buyer, so deleting
+    // a company must not erase its billing history — the FK is ON DELETE SET
+    // NULL. Warn the operator instead of silently orphaning records.
+    const { count } = await admin
+      .from('eventpilot_documents')
+      .select('id', { count: 'exact', head: true })
+      .eq('client_company_id', id)
+    if ((count ?? 0) > 0 && body.confirm !== true) {
+      return json(
+        {
+          error: `This client has ${count} billing document(s). Deleting keeps the documents but unlinks them. Send confirm: true to proceed.`,
+          requires_confirmation: true,
+          document_count: count,
+        },
+        409,
+      )
+    }
+
+    const { error } = await admin.from('eventpilot_client_companies').delete().eq('id', id)
+    if (error) return json({ error: error.message }, 400)
+    await audit('delete_client', { id, document_count: count ?? 0 }, ip, true, actor)
     return json({ ok: true })
   }
 

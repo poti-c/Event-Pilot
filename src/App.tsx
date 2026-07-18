@@ -228,6 +228,121 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
   return [value, setStoredValue] as const
 }
 
+/** Maps a eventpilot_client_companies row onto the console's ClientCompany shape. */
+function rowToClient(row: Record<string, unknown>): ClientCompany {
+  const status = String(row.account_status ?? 'active')
+  return {
+    id: String(row.id),
+    companyName: String(row.name ?? ''),
+    propertyType: String(row.property_type ?? ''),
+    planId: (row.plan as SaaSTierId) ?? 'Starter',
+    status: ((status.charAt(0).toUpperCase() + status.slice(1)) as ClientAccountStatus),
+    adminEmail: String(row.contact_email ?? ''),
+    renewalDate: String(row.renewal_date ?? ''),
+    activeUsers: Number(row.active_users ?? 0),
+    userLimitOverride: Number(row.allowed_users ?? 0),
+    bookingLimitOverride: Number(row.booking_limit ?? 0),
+    supportOwner: String(row.support_owner ?? ''),
+    notes: String(row.notes ?? ''),
+  }
+}
+
+function clientToRow(client: ClientCompany): Record<string, unknown> {
+  return {
+    id: client.id,
+    name: client.companyName,
+    property_type: client.propertyType,
+    plan: client.planId,
+    account_status: client.status.toLowerCase(),
+    contact_email: client.adminEmail,
+    renewal_date: client.renewalDate || null,
+    active_users: client.activeUsers,
+    allowed_users: client.userLimitOverride,
+    booking_limit: client.bookingLimitOverride,
+    support_owner: client.supportOwner,
+    notes: client.notes,
+  }
+}
+
+/**
+ * The console's client roster, backed by the shared
+ * eventpilot_client_companies table rather than per-user app state.
+ *
+ * Edits stay local while typing and are flushed to the server on a short
+ * debounce, so the existing keystroke-level UI keeps working without issuing a
+ * request per character.
+ */
+function useConsoleClients(enabled: boolean) {
+  const [clients, setClients] = useState<ClientCompany[]>([])
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState('')
+  const pending = useRef(new Map<string, ClientCompany>())
+  const timer = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!enabled) return
+    let active = true
+    void (async () => {
+      try {
+        const data = await consoleCall('list_clients')
+        if (!active) return
+        const rows = (data.clients as Record<string, unknown>[] | undefined) ?? []
+        setClients(rows.map(rowToClient))
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err.message : 'Could not load clients.')
+      } finally {
+        if (active) setReady(true)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [enabled])
+
+  const flush = useCallback(async () => {
+    const queued = [...pending.current.values()]
+    pending.current.clear()
+    for (const client of queued) {
+      try {
+        await consoleCall('upsert_client', { client: clientToRow(client) })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not save client.')
+      }
+    }
+  }, [])
+
+  const update = useCallback(
+    (next: ClientCompany[] | ((current: ClientCompany[]) => ClientCompany[])) => {
+      setClients((current) => {
+        const resolved = typeof next === 'function' ? next(current) : next
+        // Queue only the rows that actually changed.
+        for (const client of resolved) {
+          const before = current.find((item) => item.id === client.id)
+          if (!before || JSON.stringify(before) !== JSON.stringify(client)) {
+            pending.current.set(client.id, client)
+          }
+        }
+        if (timer.current) window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(() => void flush(), 700)
+        return resolved
+      })
+    },
+    [flush],
+  )
+
+  // Don't lose the last keystrokes if the tab closes mid-debounce.
+  useEffect(() => {
+    if (!enabled) return
+    const onHide = () => {
+      if (pending.current.size) void flush()
+    }
+    window.addEventListener('beforeunload', onHide)
+    return () => window.removeEventListener('beforeunload', onHide)
+  }, [enabled, flush])
+
+  return { clients, setClients: update, ready, error, reload: setClients }
+}
+
 type AuthState = {
   userId: string | null
   email: string
@@ -708,37 +823,6 @@ const initialExpansionPacks: ExpansionPack[] = [
   },
 ]
 
-const initialClientCompanies: ClientCompany[] = [
-  {
-    id: 'CLIENT-NNR',
-    companyName: 'Na Nirand Romantic Boutique Resort',
-    propertyType: 'Boutique resort',
-    planId: 'Platinum',
-    status: 'Pilot',
-    adminEmail: 'admin@nanirand.example',
-    renewalDate: '2027-06-05',
-    activeUsers: 4,
-    userLimitOverride: 5,
-    bookingLimitOverride: 0,
-    supportOwner: 'EventPilot Admin',
-    notes: 'Pilot account for local sandbox validation before Supabase migration.',
-  },
-  {
-    id: 'CLIENT-SME-01',
-    companyName: 'Siam Riverside Events',
-    propertyType: 'SME hotel',
-    planId: 'Gold',
-    status: 'Active',
-    adminEmail: 'events@siamriverside.example',
-    renewalDate: '2027-01-31',
-    activeUsers: 1,
-    userLimitOverride: 1,
-    bookingLimitOverride: 0,
-    supportOwner: 'Sales Ops',
-    notes: 'Single-user annual subscription candidate.',
-  },
-]
-
 const initialAdminCredentialSettings: AdminCredentialSettings = {
   adminName: 'EventPilot Owner',
   adminEmail: 'admin.eventpilot@nnr-solutions.com',
@@ -786,11 +870,9 @@ function App() {
     initialBookings,
     userId,
   )
-  const [clientCompanies, setClientCompanies] = useSyncedState(
-    'eventpilot.admin.clients.v1',
-    initialClientCompanies,
-    userId,
-  )
+  // The vendor console's roster comes from the shared table, not per-user app
+  // state, so every operator sees the same customers.
+  const consoleClients = useConsoleClients(isAdminRoute && Boolean(consoleSession))
   const [adminPlans, setAdminPlans] = useSyncedState(
     'eventpilot.admin.plans.v1',
     initialSaasPlans,
@@ -1182,13 +1264,15 @@ function App() {
       <AdminPortal
         adminCredentialSettings={adminCredentialSettings}
         adminPlans={adminPlans}
-        clientCompanies={clientCompanies}
+        clientCompanies={consoleClients.clients}
+        clientsError={consoleClients.error}
+        clientsReady={consoleClients.ready}
         consoleSession={consoleSession}
         expansionPacks={expansionPacks}
         handleLogout={handleConsoleLogout}
         setAdminCredentialSettings={setAdminCredentialSettings}
         setAdminPlans={setAdminPlans}
-        setClientCompanies={setClientCompanies}
+        setClientCompanies={consoleClients.setClients}
         setExpansionPacks={setExpansionPacks}
       />
     )
@@ -1771,6 +1855,8 @@ function AdminPortal({
   adminCredentialSettings,
   adminPlans,
   clientCompanies,
+  clientsError,
+  clientsReady,
   consoleSession,
   expansionPacks,
   handleLogout,
@@ -1782,6 +1868,8 @@ function AdminPortal({
   adminCredentialSettings: AdminCredentialSettings
   adminPlans: SaaSPlan[]
   clientCompanies: ClientCompany[]
+  clientsError: string
+  clientsReady: boolean
   consoleSession: ConsoleSession
   expansionPacks: ExpansionPack[]
   handleLogout: () => void
@@ -1828,6 +1916,8 @@ function AdminPortal({
           adminCredentialSettings={adminCredentialSettings}
           adminPlans={adminPlans}
           clientCompanies={clientCompanies}
+          clientsError={clientsError}
+          clientsReady={clientsReady}
           expansionPacks={expansionPacks}
           setAdminCredentialSettings={setAdminCredentialSettings}
           setAdminPlans={setAdminPlans}
@@ -3544,6 +3634,8 @@ function AdminConsoleView({
   adminCredentialSettings,
   adminPlans,
   clientCompanies,
+  clientsError,
+  clientsReady,
   expansionPacks,
   setAdminCredentialSettings,
   setAdminPlans,
@@ -3553,6 +3645,8 @@ function AdminConsoleView({
   adminCredentialSettings: AdminCredentialSettings
   adminPlans: SaaSPlan[]
   clientCompanies: ClientCompany[]
+  clientsError: string
+  clientsReady: boolean
   expansionPacks: ExpansionPack[]
   setAdminCredentialSettings: (
     next:
@@ -3575,6 +3669,7 @@ function AdminConsoleView({
   const [passwordDraft, setPasswordDraft] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [securityNotice, setSecurityNotice] = useState('')
+  const [clientNotice, setClientNotice] = useState('')
   const [editingPlanId, setEditingPlanId] = useState<SaaSTierId | null>(null)
   const [editingPackId, setEditingPackId] = useState<string | null>(null)
   const selectedClient =
@@ -3649,25 +3744,33 @@ function AdminConsoleView({
     setEditingPackId(id)
   }
 
-  const addClientCompany = () => {
-    const id = `CLIENT-${String(Date.now()).slice(-5)}${Math.random().toString(36).slice(2, 5)}`
-    const nextClient: ClientCompany = {
-      id,
-      companyName: 'New client company',
-      propertyType: 'Hotel / venue',
-      planId: 'Starter',
-      status: 'Pilot',
-      adminEmail: 'admin@example.com',
-      renewalDate: toDateKey(new Date()),
-      activeUsers: 1,
-      userLimitOverride: 1,
-      bookingLimitOverride: 20,
-      supportOwner: 'EventPilot Admin',
-      notes: 'New local sandbox account.',
+  // Creates the row server-side first, so the client carries its real database
+  // id — billing documents will reference it.
+  const addClientCompany = async () => {
+    setClientNotice('')
+    try {
+      const data = await consoleCall('upsert_client', {
+        client: {
+          name: 'New client company',
+          property_type: 'Hotel / venue',
+          plan: 'Starter',
+          account_status: 'pilot',
+          renewal_date: toDateKey(new Date()),
+          active_users: 1,
+          allowed_users: 1,
+          booking_limit: 20,
+          support_owner: 'EventPilot Admin',
+        },
+      })
+      const created = rowToClient(data.client as Record<string, unknown>)
+      setClientCompanies((currentClients) => [created, ...currentClients])
+      setSelectedClientId(created.id)
+      setActiveTab('Clients')
+    } catch (error) {
+      setClientNotice(
+        error instanceof Error ? error.message : 'Could not create the client company.',
+      )
     }
-    setClientCompanies((currentClients) => [nextClient, ...currentClients])
-    setSelectedClientId(id)
-    setActiveTab('Clients')
   }
 
   const updateAdminCredential = <K extends keyof AdminCredentialSettings>(
@@ -3727,11 +3830,19 @@ function AdminConsoleView({
           <p className="eyebrow">SaaS control center</p>
           <h2>Manage tenant companies, plan limits, and owner access</h2>
         </div>
-        <button className="primary-action" onClick={addClientCompany} type="button">
+        <button
+          className="primary-action"
+          onClick={() => void addClientCompany()}
+          type="button"
+        >
           <Plus size={17} />
           Add client company
         </button>
       </section>
+
+      {(clientsError || clientNotice) && (
+        <p className="admin-notice">{clientsError || clientNotice}</p>
+      )}
 
       <section className="metric-grid">
         <MetricCard icon={Building2} label="Client companies" value={clientCompanies.length.toString()} detail={`${activeClientCount} active accounts`} />
@@ -3754,6 +3865,21 @@ function AdminConsoleView({
           </button>
         ))}
       </div>
+
+      {activeTab === 'Clients' && !clientsReady && (
+        <section className="panel" aria-busy="true">
+          <p className="empty-state">Loading client companies…</p>
+        </section>
+      )}
+
+      {activeTab === 'Clients' && clientsReady && clientCompanies.length === 0 && (
+        <section className="panel">
+          <p className="empty-state">
+            No client companies yet. Add one to start issuing quotations and
+            invoices against it.
+          </p>
+        </section>
+      )}
 
       {activeTab === 'Clients' && selectedClient && (
         <section className="admin-console-layout">
@@ -3785,7 +3911,8 @@ function AdminConsoleView({
           <div className="panel admin-editor">
             <div className="panel-header">
               <div>
-                <p className="eyebrow">{selectedClient.id}</p>
+                {/* Database ids are UUIDs; show a short readable reference. */}
+                <p className="eyebrow">CLIENT-{selectedClient.id.slice(0, 8).toUpperCase()}</p>
                 <h2>{selectedClient.companyName}</h2>
               </div>
               <StatusBadge status={selectedClient.status} />
