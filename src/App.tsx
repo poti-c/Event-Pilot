@@ -228,6 +228,130 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
   return [value, setStoredValue] as const
 }
 
+/**
+ * A Thai address kept in both scripts. Thai tax invoices are legally rendered
+ * in Thai, but the console is usable in English, so place names are stored
+ * twice rather than transliterated at render time.
+ */
+type ThaiAddress = {
+  house_no: string
+  soi: string
+  road: string
+  subdistrict: string
+  subdistrict_en: string
+  district: string
+  district_en: string
+  province: string
+  province_en: string
+  postcode: string
+  country: string
+}
+
+const emptyAddress: ThaiAddress = {
+  house_no: '',
+  soi: '',
+  road: '',
+  subdistrict: '',
+  subdistrict_en: '',
+  district: '',
+  district_en: '',
+  province: '',
+  province_en: '',
+  postcode: '',
+  country: 'Thailand',
+}
+
+/** The issuer identity stamped onto every billing document. */
+type IssuerSettings = {
+  company_name: string
+  company_name_th: string
+  tax_id: string
+  office_type: 'head_office' | 'branch'
+  branch_code: string
+  billing_address: ThaiAddress
+  phone: string
+  email: string
+  website: string
+  logo_url: string
+  signatory_name: string
+  signatory_title: string
+  promptpay_id: string
+  promptpay_name: string
+  support_email: string
+}
+
+const emptyIssuer: IssuerSettings = {
+  company_name: '',
+  company_name_th: '',
+  tax_id: '',
+  office_type: 'head_office',
+  branch_code: '',
+  billing_address: emptyAddress,
+  phone: '',
+  email: '',
+  website: '',
+  logo_url: '',
+  signatory_name: '',
+  signatory_title: '',
+  promptpay_id: '',
+  promptpay_name: '',
+  support_email: '',
+}
+
+function rowToIssuer(row: Record<string, unknown> | null): IssuerSettings {
+  if (!row) return emptyIssuer
+  return {
+    ...emptyIssuer,
+    ...Object.fromEntries(
+      Object.entries(row).filter(([key, value]) => key in emptyIssuer && value !== null),
+    ),
+    billing_address: {
+      ...emptyAddress,
+      ...((row.billing_address as Partial<ThaiAddress> | null) ?? {}),
+    },
+  } as IssuerSettings
+}
+
+/** Loads and saves the single issuer settings row. */
+function useIssuerSettings(enabled: boolean) {
+  const [issuer, setIssuer] = useState<IssuerSettings>(emptyIssuer)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!enabled) return
+    let active = true
+    void (async () => {
+      try {
+        const data = await consoleCall('get_settings')
+        if (!active) return
+        setIssuer(rowToIssuer(data.settings as Record<string, unknown> | null))
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err.message : 'Could not load settings.')
+      } finally {
+        if (active) setReady(true)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [enabled])
+
+  // Saved explicitly rather than on a debounce: these values end up on legal
+  // documents, so an operator should decide when they are committed.
+  const save = useCallback(async (next: IssuerSettings): Promise<string | null> => {
+    try {
+      const data = await consoleCall('update_settings', { settings: next })
+      setIssuer(rowToIssuer(data.settings as Record<string, unknown> | null))
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Could not save settings.'
+    }
+  }, [])
+
+  return { issuer, setIssuer, save, ready, error }
+}
+
 /** Maps a eventpilot_client_companies row onto the console's ClientCompany shape. */
 function rowToClient(row: Record<string, unknown>): ClientCompany {
   const status = String(row.account_status ?? 'active')
@@ -609,7 +733,7 @@ function getNewBookingDefaults(): NewBookingFormState {
 
 type SaaSTierId = 'Starter' | 'Gold' | 'Platinum'
 type ClientAccountStatus = 'Active' | 'Pilot' | 'Suspended'
-type AdminConsoleTab = 'Clients' | 'Plans' | 'Security'
+type AdminConsoleTab = 'Clients' | 'Plans' | 'Company' | 'Security'
 
 type SaaSPlan = {
   id: SaaSTierId
@@ -2391,11 +2515,13 @@ function NewBookingView({
 
 function FormField({
   children,
+  hint,
   label,
   required,
   requiredLabel = 'Required',
 }: {
   children: React.ReactNode
+  hint?: string
   label: string
   required?: boolean
   requiredLabel?: string
@@ -2407,6 +2533,7 @@ function FormField({
         {required && <em>{requiredLabel}</em>}
       </span>
       {children}
+      {hint && <small className="form-field-hint">{hint}</small>}
     </label>
   )
 }
@@ -3630,6 +3757,292 @@ function ReportsView({
   )
 }
 
+/**
+ * Issuer details — the legal identity printed on quotations, invoices and tax
+ * invoices. Saved explicitly, since these values end up on documents that are
+ * filed with the Revenue Department.
+ */
+function IssuerSettingsPanel() {
+  const { issuer, setIssuer, save, ready, error } = useIssuerSettings(true)
+  const [notice, setNotice] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const setField = <K extends keyof IssuerSettings>(field: K, value: IssuerSettings[K]) => {
+    setIssuer((current) => ({ ...current, [field]: value }))
+    setNotice('')
+  }
+
+  const setAddress = <K extends keyof ThaiAddress>(field: K, value: ThaiAddress[K]) => {
+    setIssuer((current) => ({
+      ...current,
+      billing_address: { ...current.billing_address, [field]: value },
+    }))
+    setNotice('')
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    const failure = await save(issuer)
+    setSaving(false)
+    setNotice(failure ?? 'Issuer details saved.')
+  }
+
+  // Logos are stored inline as a data URL so the document renderer needs no
+  // network fetch (and no public bucket) to draw the letterhead.
+  const handleLogo = (file: File | undefined) => {
+    if (!file) return
+    if (file.size > 512 * 1024) {
+      setNotice('Logo must be under 512 KB.')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => setField('logo_url', String(reader.result ?? ''))
+    reader.readAsDataURL(file)
+  }
+
+  if (!ready) {
+    return (
+      <section className="panel" aria-busy="true">
+        <p className="empty-state">Loading issuer details…</p>
+      </section>
+    )
+  }
+
+  const address = issuer.billing_address
+  const taxIdDigits = issuer.tax_id.replace(/\D/g, '')
+  const taxIdValid = taxIdDigits.length === 13
+
+  return (
+    <section className="page-stack">
+      <div className="panel">
+        <PanelHeader
+          title="Issuer identity"
+          detail="Printed on every quotation, invoice, and tax invoice."
+        />
+        <div className="form-grid">
+          <FormField label="Company name (EN)" requiredLabel="Required" required>
+            <input
+              onChange={(event) => setField('company_name', event.target.value)}
+              value={issuer.company_name}
+            />
+          </FormField>
+          <FormField label="Company name (TH)">
+            <input
+              onChange={(event) => setField('company_name_th', event.target.value)}
+              placeholder="บริษัท ..."
+              value={issuer.company_name_th}
+            />
+          </FormField>
+          <FormField
+            label="Tax ID (13 digits)"
+            hint={
+              issuer.tax_id && !taxIdValid
+                ? `${taxIdDigits.length} of 13 digits`
+                : undefined
+            }
+          >
+            <input
+              inputMode="numeric"
+              onChange={(event) => setField('tax_id', event.target.value)}
+              placeholder="0000000000000"
+              value={issuer.tax_id}
+            />
+          </FormField>
+          <FormField label="Office type">
+            <select
+              onChange={(event) =>
+                setField('office_type', event.target.value as IssuerSettings['office_type'])
+              }
+              value={issuer.office_type}
+            >
+              <option value="head_office">Head office (สำนักงานใหญ่)</option>
+              <option value="branch">Branch (สาขา)</option>
+            </select>
+          </FormField>
+          {issuer.office_type === 'branch' && (
+            <FormField label="Branch code" requiredLabel="Required" required>
+              <input
+                inputMode="numeric"
+                onChange={(event) => setField('branch_code', event.target.value)}
+                placeholder="00001"
+                value={issuer.branch_code}
+              />
+            </FormField>
+          )}
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Registered address"
+          detail="Thai and English are stored separately so a Thai tax invoice never prints mixed script."
+        />
+        <div className="form-grid">
+          <FormField label="House / building no.">
+            <input
+              onChange={(event) => setAddress('house_no', event.target.value)}
+              value={address.house_no}
+            />
+          </FormField>
+          <FormField label="Soi">
+            <input
+              onChange={(event) => setAddress('soi', event.target.value)}
+              value={address.soi}
+            />
+          </FormField>
+          <FormField label="Road">
+            <input
+              onChange={(event) => setAddress('road', event.target.value)}
+              value={address.road}
+            />
+          </FormField>
+          <FormField label="Postcode">
+            <input
+              inputMode="numeric"
+              onChange={(event) => setAddress('postcode', event.target.value)}
+              value={address.postcode}
+            />
+          </FormField>
+          <FormField label="Subdistrict / ตำบล (TH)">
+            <input
+              onChange={(event) => setAddress('subdistrict', event.target.value)}
+              value={address.subdistrict}
+            />
+          </FormField>
+          <FormField label="Subdistrict (EN)">
+            <input
+              onChange={(event) => setAddress('subdistrict_en', event.target.value)}
+              value={address.subdistrict_en}
+            />
+          </FormField>
+          <FormField label="District / อำเภอ (TH)">
+            <input
+              onChange={(event) => setAddress('district', event.target.value)}
+              value={address.district}
+            />
+          </FormField>
+          <FormField label="District (EN)">
+            <input
+              onChange={(event) => setAddress('district_en', event.target.value)}
+              value={address.district_en}
+            />
+          </FormField>
+          <FormField label="Province / จังหวัด (TH)">
+            <input
+              onChange={(event) => setAddress('province', event.target.value)}
+              value={address.province}
+            />
+          </FormField>
+          <FormField label="Province (EN)">
+            <input
+              onChange={(event) => setAddress('province_en', event.target.value)}
+              value={address.province_en}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader title="Contact and signature" />
+        <div className="form-grid">
+          <FormField label="Phone">
+            <input
+              onChange={(event) => setField('phone', event.target.value)}
+              value={issuer.phone}
+            />
+          </FormField>
+          <FormField label="Email">
+            <input
+              onChange={(event) => setField('email', event.target.value)}
+              type="email"
+              value={issuer.email}
+            />
+          </FormField>
+          <FormField label="Website">
+            <input
+              onChange={(event) => setField('website', event.target.value)}
+              value={issuer.website}
+            />
+          </FormField>
+          <FormField label="Support email">
+            <input
+              onChange={(event) => setField('support_email', event.target.value)}
+              type="email"
+              value={issuer.support_email}
+            />
+          </FormField>
+          <FormField label="Signatory name">
+            <input
+              onChange={(event) => setField('signatory_name', event.target.value)}
+              value={issuer.signatory_name}
+            />
+          </FormField>
+          <FormField label="Signatory title">
+            <input
+              onChange={(event) => setField('signatory_title', event.target.value)}
+              value={issuer.signatory_title}
+            />
+          </FormField>
+          <FormField label="PromptPay ID">
+            <input
+              onChange={(event) => setField('promptpay_id', event.target.value)}
+              value={issuer.promptpay_id}
+            />
+          </FormField>
+          <FormField label="PromptPay account name">
+            <input
+              onChange={(event) => setField('promptpay_name', event.target.value)}
+              value={issuer.promptpay_name}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader title="Letterhead logo" detail="PNG or SVG, under 512 KB." />
+        <div className="issuer-logo-row">
+          {issuer.logo_url ? (
+            <img alt="Current logo" className="issuer-logo-preview" src={issuer.logo_url} />
+          ) : (
+            <p className="empty-state">No logo set — documents print the company name.</p>
+          )}
+          <div className="status-actions">
+            <input
+              accept="image/png,image/svg+xml,image/jpeg"
+              onChange={(event) => handleLogo(event.target.files?.[0])}
+              type="file"
+            />
+            {issuer.logo_url && (
+              <button
+                className="secondary-action"
+                onClick={() => setField('logo_url', '')}
+                type="button"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="status-actions">
+          <button
+            className="primary-action"
+            disabled={saving}
+            onClick={() => void handleSave()}
+            type="button"
+          >
+            <ShieldCheck size={17} />
+            {saving ? 'Saving…' : 'Save issuer details'}
+          </button>
+        </div>
+        {(notice || error) && <p className="admin-notice">{notice || error}</p>}
+      </div>
+    </section>
+  )
+}
+
 function AdminConsoleView({
   adminCredentialSettings,
   adminPlans,
@@ -3852,7 +4265,7 @@ function AdminConsoleView({
       </section>
 
       <div className="admin-tabs" role="tablist" aria-label="Admin console sections">
-        {(['Clients', 'Plans', 'Security'] as const).map((tab) => (
+        {(['Clients', 'Plans', 'Company', 'Security'] as const).map((tab) => (
           <button
             className={activeTab === tab ? 'filter-chip filter-all active' : 'filter-chip'}
             key={tab}
@@ -4372,6 +4785,8 @@ function AdminConsoleView({
           </section>
         </div>
       )}
+
+      {activeTab === 'Company' && <IssuerSettingsPanel />}
 
       {activeTab === 'Security' && (
         <section className="admin-console-layout admin-security-layout">
@@ -5113,16 +5528,21 @@ function MetricCard({
 
 function PanelHeader({
   action,
+  detail,
   onAction,
   title,
 }: {
   action?: string
+  detail?: string
   onAction?: () => void
   title: string
 }) {
   return (
     <div className="panel-header">
-      <h2>{title}</h2>
+      <div>
+        <h2>{title}</h2>
+        {detail && <p className="panel-header-detail">{detail}</p>}
+      </div>
       {action && (
         <button className="text-action" onClick={onAction} type="button">
           {action}

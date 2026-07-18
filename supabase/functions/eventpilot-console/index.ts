@@ -327,6 +327,69 @@ Deno.serve(async (req) => {
     return json({ ok: true })
   }
 
+  // --- Issuer settings -----------------------------------------------------
+  // The single eventpilot_console_settings row: NNR-Solutions' own legal
+  // identity, snapshotted onto every billing document at issue time.
+
+  if (action === 'get_settings') {
+    const { data, error } = await admin
+      .from('eventpilot_console_settings')
+      .select('*')
+      .eq('id', true)
+      .maybeSingle()
+    if (error) return json({ error: error.message }, 400)
+    return json({ settings: data })
+  }
+
+  if (action === 'update_settings') {
+    const patch = (body.settings ?? {}) as Record<string, unknown>
+    const officeType = cleanStr(patch.office_type) ?? 'head_office'
+    const branchCode = cleanStr(patch.branch_code)
+
+    // A branch must identify itself. Thai tax invoices show สาขาที่ NNNNN, and
+    // the Revenue Department expects the 5-digit branch number.
+    if (officeType === 'branch' && !branchCode) {
+      return json({ error: 'A branch office requires a branch code.' }, 400)
+    }
+
+    const taxId = cleanStr(patch.tax_id)
+    if (taxId && !/^\d{13}$/.test(taxId.replace(/[\s-]/g, ''))) {
+      return json({ error: 'Thai tax ID must be 13 digits.' }, 400)
+    }
+
+    const row: Record<string, unknown> = {
+      company_name: cleanStr(patch.company_name) ?? 'NNR-Solutions Co., Ltd.',
+      company_name_th: cleanStr(patch.company_name_th),
+      tax_id: taxId ? taxId.replace(/[\s-]/g, '') : null,
+      office_type: officeType,
+      branch_code: officeType === 'branch' ? branchCode : null,
+      billing_address: patch.billing_address ?? {},
+      phone: cleanStr(patch.phone),
+      email: cleanStr(patch.email),
+      website: cleanStr(patch.website),
+      logo_url: cleanStr(patch.logo_url),
+      signatory_name: cleanStr(patch.signatory_name),
+      signatory_title: cleanStr(patch.signatory_title),
+      promptpay_id: cleanStr(patch.promptpay_id),
+      promptpay_name: cleanStr(patch.promptpay_name),
+      support_email: cleanStr(patch.support_email),
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await admin
+      .from('eventpilot_console_settings')
+      .update(row)
+      .eq('id', true)
+      .select('*')
+      .maybeSingle()
+    if (error) {
+      await audit('update_settings', { error: error.message }, ip, false, actor)
+      return json({ error: error.message }, 400)
+    }
+    await audit('update_settings', { company_name: row.company_name }, ip, true, actor)
+    return json({ settings: data })
+  }
+
   // --- Client roster -------------------------------------------------------
   // The console's Clients tab reads and writes the shared
   // eventpilot_client_companies table, so every operator sees one roster.

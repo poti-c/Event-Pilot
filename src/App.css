@@ -3185,3 +3185,29 @@ span.status-badge {
     flex-direction: column;
   }
 }
+
+.form-field-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.panel-header-detail {
+  margin: 2px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  max-width: 62ch;
+}
+
+.issuer-logo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.issuer-logo-preview {
+  max-height: 64px;
+  max-width: 220px;
+  object-fit: contain;
+}
