@@ -38,6 +38,14 @@ import type { Session } from '@supabase/supabase-js'
 import './App.css'
 import { isSupabaseEnabled, supabase } from './supabaseClient'
 import {
+  clearConsoleSession,
+  consoleCall,
+  consoleLogin,
+  readConsoleSession,
+  verifyConsoleSession,
+} from './consoleClient'
+import type { ConsoleSession } from './consoleClient'
+import {
   accounts,
   initialBookings,
   naNirandProfile,
@@ -759,6 +767,9 @@ function App() {
   const auth = useSupabaseAuth()
   // Offline sandbox session (used only when Supabase is not configured).
   const [localSession, setLocalSession] = useState<LoginSession>(initialLoginSession)
+  // Vendor console session — entirely independent of the customer auth above.
+  const [consoleSession, setConsoleSession] = useState<ConsoleSession | null>(null)
+  const [consoleReady, setConsoleReady] = useState(!isAdminRoute)
   const userId = auth.userId
   const loginSession: LoginSession = isSupabaseEnabled
     ? {
@@ -812,6 +823,22 @@ function App() {
     window.addEventListener('hashchange', handleHashChange)
     return () => window.removeEventListener('hashchange', handleHashChange)
   }, [])
+
+  // Restore a console session on reload, confirming it server-side so a stale
+  // or revoked token drops straight back to the console login.
+  useEffect(() => {
+    if (!isAdminRoute) return
+    let active = true
+    void (async () => {
+      const valid = await verifyConsoleSession()
+      if (!active) return
+      setConsoleSession(valid ? readConsoleSession() : null)
+      setConsoleReady(true)
+    })()
+    return () => {
+      active = false
+    }
+  }, [isAdminRoute])
 
   useEffect(() => {
     const nextHash = activeModule.replace(/\s+/g, '-')
@@ -1025,6 +1052,23 @@ function App() {
     )
   }
 
+  // Vendor console sign-in (see src/consoleClient.ts). Separate credentials,
+  // separate token, no Supabase Auth involvement.
+  const handleConsoleLogin = async (
+    username: string,
+    password: string,
+  ): Promise<string | null> => {
+    const failure = await consoleLogin(username, password)
+    if (failure) return failure
+    setConsoleSession(readConsoleSession())
+    return null
+  }
+
+  const handleConsoleLogout = () => {
+    clearConsoleSession()
+    setConsoleSession(null)
+  }
+
   // Returns an error message on failure, or null on success. `identifier` is an
   // email for Top Management / Managers, or a username for Staff (scoped by the
   // workspace code into a synthetic auth email).
@@ -1059,23 +1103,18 @@ function App() {
         await supabase.auth.signOut()
         return `This is not a ${ROLE_LABELS[role].en} account.`
       }
-      if (isAdminRoute && role !== 'top_management') {
-        await supabase.auth.signOut()
-        return 'Admin Console requires a Top Management account.'
-      }
-
       setActiveModule('Dashboard')
       return null
     }
 
     // Offline sandbox (Supabase not configured): accept the entered identity,
-    // honouring the selected tier (admin route still forces Top Management).
+    // honouring the selected tier.
     setLocalSession({
       authenticated: true,
       email,
       displayName: role === 'staff' ? identifier.trim() : '',
       workspaceCode: workspaceCode.trim(),
-      role: isAdminRoute ? 'top_management' : role,
+      role,
     })
     setActiveModule('Dashboard')
     return null
@@ -1129,40 +1168,40 @@ function App() {
     setActiveModule('Login')
   }
 
-  // Wait for the Supabase session to resolve before deciding what to render,
-  // so we don't briefly flash the login screen for an already-signed-in user.
-  if (isSupabaseEnabled && !auth.ready) {
-    return <main className="login-shell" aria-busy="true" />
-  }
-
-  if (
-    !loginSession.authenticated ||
-    activeModule === 'Login' ||
-    (isAdminRoute && loginSession.role !== 'top_management')
-  ) {
-    return (
-      <LoginView
-        adminCredentialSettings={adminCredentialSettings}
-        onSubmit={handleLoginSubmit}
-        isAdminRoute={isAdminRoute}
-      />
-    )
-  }
-
+  // The vendor console is a separate authority plane: it never consults the
+  // customer Supabase session, so no customer account — not even a Top
+  // Management one — can reach it. Checked before the customer auth gate.
   if (isAdminRoute) {
+    if (!consoleReady) {
+      return <main className="login-shell" aria-busy="true" />
+    }
+    if (!consoleSession) {
+      return <ConsoleLoginView onSubmit={handleConsoleLogin} />
+    }
     return (
       <AdminPortal
         adminCredentialSettings={adminCredentialSettings}
         adminPlans={adminPlans}
         clientCompanies={clientCompanies}
+        consoleSession={consoleSession}
         expansionPacks={expansionPacks}
-        handleLogout={handleLogout}
+        handleLogout={handleConsoleLogout}
         setAdminCredentialSettings={setAdminCredentialSettings}
         setAdminPlans={setAdminPlans}
         setClientCompanies={setClientCompanies}
         setExpansionPacks={setExpansionPacks}
       />
     )
+  }
+
+  // Wait for the Supabase session to resolve before deciding what to render,
+  // so we don't briefly flash the login screen for an already-signed-in user.
+  if (isSupabaseEnabled && !auth.ready) {
+    return <main className="login-shell" aria-busy="true" />
+  }
+
+  if (!loginSession.authenticated || activeModule === 'Login') {
+    return <LoginView onSubmit={handleLoginSubmit} />
   }
 
   return (
@@ -1461,19 +1500,16 @@ const LOGIN_COPY: Record<
   },
 }
 
+/** Customer sign-in. The vendor console has its own ConsoleLoginView. */
 function LoginView({
-  adminCredentialSettings,
   onSubmit,
-  isAdminRoute,
 }: {
-  adminCredentialSettings: AdminCredentialSettings
   onSubmit: (
     role: AuthRole,
     identifier: string,
     password: string,
     workspaceCode: string,
   ) => Promise<string | null>
-  isAdminRoute: boolean
 }) {
   const [role, setRole] = useState<AuthRole>('top_management')
   const [email, setEmail] = useState('')
@@ -1485,9 +1521,7 @@ function LoginView({
   const [lang, setLang] = useState<LoginLang>('en')
   const t = LOGIN_COPY[lang]
   const isStaff = role === 'staff'
-  const minPasswordLength = isAdminRoute
-    ? adminCredentialSettings.minimumPasswordLength
-    : 8
+  const minPasswordLength = 8
   const passwordReady = password.length >= minPasswordLength
   const identifierReady = isStaff
     ? username.trim() && workspaceCode.trim()
@@ -1570,22 +1604,20 @@ function LoginView({
           <p>{t.subtitle}</p>
         </div>
 
-        {!isAdminRoute && (
-          <div className="login-role-tabs" role="tablist" aria-label={t.roleGroupLabel}>
-            {AUTH_ROLES.map((r) => (
-              <button
-                aria-selected={role === r}
-                className={role === r ? 'is-active' : ''}
-                key={r}
-                onClick={() => selectRole(r)}
-                role="tab"
-                type="button"
-              >
-                {ROLE_LABELS[r][lang]}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="login-role-tabs" role="tablist" aria-label={t.roleGroupLabel}>
+          {AUTH_ROLES.map((r) => (
+            <button
+              aria-selected={role === r}
+              className={role === r ? 'is-active' : ''}
+              key={r}
+              onClick={() => selectRole(r)}
+              role="tab"
+              type="button"
+            >
+              {ROLE_LABELS[r][lang]}
+            </button>
+          ))}
+        </div>
 
         <form className="login-form" onSubmit={submitLogin}>
           {isStaff ? (
@@ -1626,11 +1658,7 @@ function LoginView({
               autoComplete="current-password"
               onChange={(event) => setPassword(event.target.value)}
               placeholder={
-                isStaff
-                  ? t.staffPasswordPlaceholder
-                  : isAdminRoute
-                    ? t.adminPasswordPlaceholder
-                    : t.clientPasswordPlaceholder
+                isStaff ? t.staffPasswordPlaceholder : t.clientPasswordPlaceholder
               }
               required
               type="password"
@@ -1650,10 +1678,100 @@ function LoginView({
   )
 }
 
+/**
+ * Vendor console sign-in. Username + password against eventpilot_console_admins
+ * — deliberately not an email/password Supabase login, so this screen shares no
+ * credentials or session with the customer app.
+ */
+function ConsoleLoginView({
+  onSubmit,
+}: {
+  onSubmit: (username: string, password: string) => Promise<string | null>
+}) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const ready = username.trim().length > 0 && password.length > 0 && !submitting
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    setSubmitting(true)
+    const failure = await onSubmit(username, password)
+    setSubmitting(false)
+    if (failure) setError(failure)
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="login-brand-stage">
+        <div className="login-logo-card">
+          <img
+            alt="EventPilot - YOUR BEO NAVIGATOR"
+            src="/brand/eventpilot-command-mark-final.svg"
+          />
+        </div>
+        <p className="login-promo">
+          NNR-Solutions staff only. Client sign-in is at{' '}
+          <a href="/#Dashboard">the client app</a>.
+        </p>
+      </section>
+
+      <section className="login-panel">
+        <div>
+          <p className="eyebrow">EventPilot operator access</p>
+          <h1>Vendor console</h1>
+          <p>
+            Sign in with your console credentials to manage client companies,
+            plans, and operator accounts.
+          </p>
+        </div>
+
+        {!isSupabaseEnabled && (
+          <p className="admin-notice">
+            Offline sandbox — Supabase is not configured, so any credentials are
+            accepted and nothing is saved to a backend.
+          </p>
+        )}
+
+        <form className="login-form" onSubmit={submit}>
+          <FormField label="Console username" requiredLabel="Required" required>
+            <input
+              autoCapitalize="none"
+              autoComplete="username"
+              onChange={(event) => setUsername(event.target.value)}
+              required
+              value={username}
+            />
+          </FormField>
+          <FormField label="Console password" requiredLabel="Required" required>
+            <input
+              autoComplete="current-password"
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              type="password"
+              value={password}
+            />
+          </FormField>
+
+          {error && <p className="login-error">{error}</p>}
+
+          <button className="primary-action login-submit" disabled={!ready} type="submit">
+            <ShieldCheck size={17} />
+            Enter console
+          </button>
+        </form>
+      </section>
+    </main>
+  )
+}
+
 function AdminPortal({
   adminCredentialSettings,
   adminPlans,
   clientCompanies,
+  consoleSession,
   expansionPacks,
   handleLogout,
   setAdminCredentialSettings,
@@ -1664,6 +1782,7 @@ function AdminPortal({
   adminCredentialSettings: AdminCredentialSettings
   adminPlans: SaaSPlan[]
   clientCompanies: ClientCompany[]
+  consoleSession: ConsoleSession
   expansionPacks: ExpansionPack[]
   handleLogout: () => void
   setAdminCredentialSettings: (
@@ -1692,6 +1811,10 @@ function AdminPortal({
           </div>
         </div>
         <div className="topbar-actions">
+          <span className="admin-portal-operator">
+            {consoleSession.name}
+            {consoleSession.sandbox ? ' · sandbox' : ''}
+          </span>
           <a className="secondary-action" href="/#Dashboard">
             Open client app
           </a>
@@ -3448,6 +3571,7 @@ function AdminConsoleView({
   const [selectedClientId, setSelectedClientId] = useState(
     clientCompanies[0]?.id ?? '',
   )
+  const [currentPassword, setCurrentPassword] = useState('')
   const [passwordDraft, setPasswordDraft] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [securityNotice, setSecurityNotice] = useState('')
@@ -3556,7 +3680,9 @@ function AdminConsoleView({
     }))
   }
 
-  const handlePasswordUpdate = () => {
+  // Changes the signed-in console admin's real password via the console edge
+  // function (the database stores only a bcrypt hash).
+  const handlePasswordUpdate = async () => {
     if (passwordDraft.length < adminCredentialSettings.minimumPasswordLength) {
       setSecurityNotice(
         `Password must be at least ${adminCredentialSettings.minimumPasswordLength} characters.`,
@@ -3569,13 +3695,29 @@ function AdminConsoleView({
       return
     }
 
+    if (!currentPassword) {
+      setSecurityNotice('Enter your current password to confirm the change.')
+      return
+    }
+
+    try {
+      await consoleCall('change_password', {
+        current_password: currentPassword,
+        new_password: passwordDraft,
+      })
+    } catch (error) {
+      setSecurityNotice(error instanceof Error ? error.message : 'Password change failed.')
+      return
+    }
+
     setAdminCredentialSettings((currentSettings) => ({
       ...currentSettings,
       lastPasswordChange: toDateKey(new Date()),
     }))
+    setCurrentPassword('')
     setPasswordDraft('')
     setPasswordConfirm('')
-    setSecurityNotice('Admin password policy updated locally. Plain text is not stored.')
+    setSecurityNotice('Console password updated.')
   }
 
   return (
@@ -4126,8 +4268,17 @@ function AdminConsoleView({
                   value={adminCredentialSettings.adminEmail}
                 />
               </FormField>
-              <FormField label="New admin password">
+              <FormField label="Current console password">
                 <input
+                  autoComplete="current-password"
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  type="password"
+                  value={currentPassword}
+                />
+              </FormField>
+              <FormField label="New console password">
+                <input
+                  autoComplete="new-password"
                   onChange={(event) => setPasswordDraft(event.target.value)}
                   type="password"
                   value={passwordDraft}
@@ -4135,6 +4286,7 @@ function AdminConsoleView({
               </FormField>
               <FormField label="Confirm password">
                 <input
+                  autoComplete="new-password"
                   onChange={(event) => setPasswordConfirm(event.target.value)}
                   type="password"
                   value={passwordConfirm}
@@ -4142,9 +4294,13 @@ function AdminConsoleView({
               </FormField>
             </div>
             <div className="status-actions">
-              <button className="primary-action" onClick={handlePasswordUpdate} type="button">
+              <button
+                className="primary-action"
+                onClick={() => void handlePasswordUpdate()}
+                type="button"
+              >
                 <ShieldCheck size={17} />
-                Update password policy
+                Update console password
               </button>
             </div>
             {securityNotice && <p className="admin-notice">{securityNotice}</p>}
