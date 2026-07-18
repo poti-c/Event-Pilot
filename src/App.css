@@ -2698,6 +2698,93 @@ span.status-badge {
   color: var(--text);
 }
 
+.panel-subtitle {
+  margin: -6px 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.user-admin-empty {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.user-admin-list {
+  display: grid;
+  gap: 8px;
+}
+
+.user-admin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 11px 12px;
+}
+
+.user-admin-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-admin-identity strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.user-admin-identity span {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.user-admin-you {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent, #235f8f);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.user-admin-select {
+  flex-shrink: 0;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.user-admin-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 620px) {
+  .user-admin-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .user-admin-select {
+    width: 100%;
+  }
+}
+
 .integration-card {
   display: flex;
   align-items: flex-start;
@@ -2741,7 +2828,52 @@ span.status-badge {
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 12px 20px;
+}
+
+.property-profile-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.detail-item-wide {
+  grid-column: 1 / -1;
+}
+
+.email-routes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 20px;
+  margin-top: 2px;
+}
+
+.email-route {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-strong);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.email-route span {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .property-profile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .email-routes,
+  .property-profile-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .property-profile-head {

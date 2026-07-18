@@ -805,14 +805,20 @@ export const tasks: Task[] = [
   },
 ]
 
+// Authority tiers, aligned with the three-tier login model
+// (top_management / manager / staff). Descriptions only for now — access is
+// not yet enforced per tier.
 export const rolePermissions = [
-  ['Admin', 'Full system, settings, users, audit logs'],
-  ['Sales manager', 'Pipeline, bookings, proposals, reports, approvals'],
-  ['Catering manager', 'Bookings, BEOs, packages, event operations'],
-  ['Event coordinator', 'Tasks, event details, client communication, BEO updates'],
-  ['Banquet operations', 'Operations view, setup notes, staffing, checklists'],
-  ['Kitchen', 'Menu, guest counts, service times, dietary notes'],
-  ['Finance', 'Quotes, proforma, invoices, receipts, payments'],
-  ['Management', 'Dashboards, reports, revenue forecast, read approvals'],
-  ['Client portal user', 'Proposal, booking details, BEO approval, payment'],
+  [
+    'Top Management',
+    'Full access — bookings, BEOs, clients, reports, subscription controls, admin settings, and user management.',
+  ],
+  [
+    'Managers',
+    'Day-to-day operations — bookings, BEOs, proposals, packages, tasks, and reports. No admin, billing, or user management.',
+  ],
+  [
+    'Staff',
+    'Assigned work — event details, BEO updates, checklists, and operational views for their tasks.',
+  ],
 ]

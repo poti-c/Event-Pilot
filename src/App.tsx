@@ -1380,6 +1380,7 @@ function App() {
           {activeModule === 'Settings' && (
             <SettingsView
               account={loginSession}
+              currentUserId={userId}
               propertyProfile={propertyProfile}
               setPropertyProfile={setPropertyProfile}
               updateAccountEmail={updateAccountEmail}
@@ -4262,6 +4263,7 @@ function AdminConsoleView({
 
 function SettingsView({
   account,
+  currentUserId,
   propertyProfile,
   setPropertyProfile,
   updateAccountEmail,
@@ -4269,6 +4271,7 @@ function SettingsView({
   updateProfileName,
 }: {
   account: LoginSession
+  currentUserId: string | null
   propertyProfile: PropertyProfile
   setPropertyProfile: (value: PropertyProfile) => void
   updateAccountEmail: (email: string) => Promise<string | null>
@@ -4406,14 +4409,29 @@ function SettingsView({
               </FormField>
             </div>
           ) : (
-            <div className="profile-grid">
+            <div className="profile-grid property-profile-grid">
               <Detail label="Address" value={propertyProfile.address} />
               <Detail label="Phone" value={propertyProfile.phones.join(', ')} />
-              <Detail
-                label="Email routing"
-                value={`Events ${propertyProfile.emails.events} | Reservations ${propertyProfile.emails.reservations} | General ${propertyProfile.emails.general}`}
-              />
-              <Detail label="Line official" value={propertyProfile.lineOfficial} />
+              <Detail label="Line Official" value={propertyProfile.lineOfficial} />
+              <div className="detail-item detail-item-wide">
+                <dt>Email routing</dt>
+                <dd>
+                  <div className="email-routes">
+                    <div className="email-route">
+                      <span>Events</span>
+                      {propertyProfile.emails.events}
+                    </div>
+                    <div className="email-route">
+                      <span>Reservations</span>
+                      {propertyProfile.emails.reservations}
+                    </div>
+                    <div className="email-route">
+                      <span>General</span>
+                      {propertyProfile.emails.general}
+                    </div>
+                  </div>
+                </dd>
+              </div>
             </div>
           )}
         </div>
@@ -4425,6 +4443,10 @@ function SettingsView({
         updateAccountPassword={updateAccountPassword}
         updateProfileName={updateProfileName}
       />
+
+      {isSupabaseEnabled && account.role === 'top_management' && (
+        <UserManagementPanel currentUserId={currentUserId} />
+      )}
 
       <section className="panel">
         <PanelHeader title="Roles and permissions" />
@@ -4617,6 +4639,137 @@ function UserProfilePanel({
 
         {!editing && notice && <p className="profile-notice">{notice}</p>}
       </div>
+    </section>
+  )
+}
+
+type ManagedUser = {
+  user_id: string
+  email: string
+  display_name: string | null
+  workspace_code: string | null
+  role: AuthRole
+}
+
+/**
+ * Top-Management-only panel to view every user and change their access tier.
+ * Writes go straight to eventpilot_profiles; the database guard trigger enforces
+ * that only Top Management can change roles and blocks demoting the last one.
+ */
+function UserManagementPanel({ currentUserId }: { currentUserId: string | null }) {
+  const [users, setUsers] = useState<ManagedUser[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    if (!supabase) return
+    let active = true
+    void supabase
+      .from('eventpilot_profiles')
+      .select('user_id, email, display_name, workspace_code, role')
+      .order('created_at')
+      .then(({ data, error: fetchError }) => {
+        if (!active) return
+        if (fetchError) {
+          setLoadError(fetchError.message)
+        } else {
+          setUsers((data ?? []) as ManagedUser[])
+        }
+        setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const changeRole = async (user: ManagedUser, nextRole: AuthRole) => {
+    if (!supabase || nextRole === user.role) return
+    setError('')
+    setNotice('')
+
+    if (
+      user.user_id === currentUserId &&
+      !window.confirm(
+        `Change your OWN access level to ${ROLE_LABELS[nextRole].en}? You may lose access to this panel.`,
+      )
+    ) {
+      return
+    }
+
+    setSavingId(user.user_id)
+    const { error: updateError } = await supabase
+      .from('eventpilot_profiles')
+      .update({ role: nextRole })
+      .eq('user_id', user.user_id)
+    setSavingId(null)
+
+    if (updateError) {
+      // Surface the guard-trigger message (e.g. last Top Management) verbatim.
+      setError(updateError.message)
+      return
+    }
+    setUsers((current) =>
+      current.map((item) =>
+        item.user_id === user.user_id ? { ...item, role: nextRole } : item,
+      ),
+    )
+    setNotice(
+      `${user.display_name?.trim() || user.email} is now ${ROLE_LABELS[nextRole].en}.`,
+    )
+  }
+
+  return (
+    <section className="panel">
+      <PanelHeader title="User management" />
+      <p className="panel-subtitle">
+        Set each user's access level. Only Top Management can manage roles.
+      </p>
+
+      {loading ? (
+        <p className="user-admin-empty">Loading users…</p>
+      ) : loadError ? (
+        <p className="login-error">{loadError}</p>
+      ) : (
+        <div className="user-admin-list">
+          {users.map((user) => (
+            <div className="user-admin-row" key={user.user_id}>
+              <div className="user-admin-identity">
+                <strong>
+                  {user.display_name?.trim() || user.email}
+                  {user.user_id === currentUserId && (
+                    <span className="user-admin-you">You</span>
+                  )}
+                </strong>
+                <span>
+                  {user.email}
+                  {user.workspace_code ? ` · ${user.workspace_code}` : ''}
+                </span>
+              </div>
+              <select
+                aria-label={`Access level for ${user.email}`}
+                className="user-admin-select"
+                disabled={savingId === user.user_id}
+                onChange={(event) =>
+                  changeRole(user, event.target.value as AuthRole)
+                }
+                value={user.role}
+              >
+                {AUTH_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {ROLE_LABELS[r].en}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && <p className="login-error">{error}</p>}
+      {notice && <p className="profile-notice">{notice}</p>}
     </section>
   )
 }
