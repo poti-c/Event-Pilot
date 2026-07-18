@@ -224,13 +224,18 @@ type AuthState = {
   userId: string | null
   email: string
   role: LoginSession['role']
+  displayName: string
+  workspaceCode: string
   ready: boolean
+  setDisplayName: (name: string) => void
 }
 
-/** Tracks the Supabase auth session and resolves the user's Event Pilot role. */
+/** Tracks the Supabase auth session and resolves the user's Event Pilot profile. */
 function useSupabaseAuth(): AuthState {
   const [session, setSession] = useState<Session | null>(null)
-  const [role, setRole] = useState<LoginSession['role']>('Client User')
+  const [role, setRole] = useState<LoginSession['role']>('staff')
+  const [displayName, setDisplayName] = useState('')
+  const [workspaceCode, setWorkspaceCode] = useState('')
   const [ready, setReady] = useState(!isSupabaseEnabled)
 
   useEffect(() => {
@@ -238,7 +243,7 @@ function useSupabaseAuth(): AuthState {
     let active = true
     const client = supabase
 
-    // Applies a session and (asynchronously) resolves the user's role. All
+    // Applies a session and (asynchronously) resolves the user's profile. All
     // setState calls happen inside async callbacks, never synchronously in the
     // effect body.
     const applySession = (next: Session | null) => {
@@ -246,21 +251,24 @@ function useSupabaseAuth(): AuthState {
       setSession(next)
       const uid = next?.user?.id
       if (!uid) {
-        setRole('Client User')
+        setRole('staff')
+        setDisplayName('')
+        setWorkspaceCode('')
         return
       }
       void client
         .from('eventpilot_profiles')
-        .select('role')
+        .select('role, display_name, workspace_code')
         .eq('user_id', uid)
         .maybeSingle()
         .then(({ data }) => {
-          if (
-            active &&
-            (data?.role === 'Owner Admin' || data?.role === 'Client User')
-          ) {
-            setRole(data.role)
+          if (!active) return
+          const nextRole = data?.role as AuthRole | undefined
+          if (nextRole && AUTH_ROLES.includes(nextRole)) {
+            setRole(nextRole)
           }
+          setDisplayName((data?.display_name as string | null) ?? '')
+          setWorkspaceCode((data?.workspace_code as string | null) ?? '')
         })
     }
 
@@ -282,7 +290,10 @@ function useSupabaseAuth(): AuthState {
     userId: session?.user?.id ?? null,
     email: session?.user?.email ?? '',
     role,
+    displayName,
+    workspaceCode,
     ready,
+    setDisplayName,
   }
 }
 
@@ -529,10 +540,43 @@ type AdminCredentialSettings = {
   lastPasswordChange: string
 }
 
+/** Three-tier authority model, mirroring the Kaizen System. */
+type AuthRole = 'top_management' | 'manager' | 'staff'
+
 type LoginSession = {
   authenticated: boolean
   email: string
-  role: 'Owner Admin' | 'Client User'
+  displayName: string
+  workspaceCode: string
+  role: AuthRole
+}
+
+const AUTH_ROLES: AuthRole[] = ['top_management', 'manager', 'staff']
+
+const ROLE_LABELS: Record<AuthRole, { en: string; th: string }> = {
+  top_management: { en: 'Top Management', th: 'ผู้บริหารระดับสูง' },
+  manager: { en: 'Managers', th: 'ผู้จัดการ' },
+  staff: { en: 'Staff', th: 'พนักงาน' },
+}
+
+// Staff sign in with a username scoped to their workspace code; the auth email is
+// derived deterministically so usernames can repeat across workspaces (Kaizen pattern).
+function normalizeStaffUsername(username: string): string {
+  return username.trim().toLowerCase().split(' ').filter(Boolean).join('.')
+}
+
+function normalizeWorkspaceCode(code: string): string {
+  return code
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function staffEmail(username: string, workspaceCode: string): string {
+  return `${normalizeStaffUsername(username)}@${normalizeWorkspaceCode(
+    workspaceCode,
+  )}.staff.eventpilot.internal`
 }
 
 type NotificationItem = {
@@ -703,7 +747,9 @@ const initialAdminCredentialSettings: AdminCredentialSettings = {
 const initialLoginSession: LoginSession = {
   authenticated: false,
   email: '',
-  role: 'Client User',
+  displayName: '',
+  workspaceCode: '',
+  role: 'staff',
 }
 
 function App() {
@@ -715,7 +761,13 @@ function App() {
   const [localSession, setLocalSession] = useState<LoginSession>(initialLoginSession)
   const userId = auth.userId
   const loginSession: LoginSession = isSupabaseEnabled
-    ? { authenticated: !!auth.userId, email: auth.email, role: auth.role }
+    ? {
+        authenticated: !!auth.userId,
+        email: auth.email,
+        displayName: auth.displayName,
+        workspaceCode: auth.workspaceCode,
+        role: auth.role,
+      }
     : localSession
 
   const [bookings, setBookings] = useSyncedState(
@@ -973,56 +1025,96 @@ function App() {
     )
   }
 
-  const resetSandbox = () => {
-    // Be explicit that in cloud mode this overwrites the signed-in account's
-    // saved bookings, not just a throwaway local sandbox.
-    const confirmed = window.confirm(
-      isSupabaseEnabled
-        ? 'This will REPLACE all of your saved bookings with the original demo data and cannot be undone. Continue?'
-        : 'Reset all local demo bookings to the original sandbox data?',
-    )
-    if (!confirmed) return
-    setBookings(initialBookings)
-    setSelectedBookingId(initialBookings[0].id)
-    setQuery('')
-    setStatusFilter('All')
-    setSandboxActions([])
-    recordSandboxAction('Sandbox reset', 'Demo bookings were restored locally.')
-  }
-
-  // Returns an error message on failure, or null on success.
+  // Returns an error message on failure, or null on success. `identifier` is an
+  // email for Top Management / Managers, or a username for Staff (scoped by the
+  // workspace code into a synthetic auth email).
   const handleLoginSubmit = async (
-    email: string,
+    role: AuthRole,
+    identifier: string,
     password: string,
+    workspaceCode: string,
   ): Promise<string | null> => {
+    const email =
+      role === 'staff' ? staffEmail(identifier, workspaceCode) : identifier.trim()
+
     if (isSupabaseEnabled && supabase) {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email,
         password,
       })
-      if (error) return error.message
-      if (isAdminRoute) {
-        const { data: profile } = await supabase
-          .from('eventpilot_profiles')
-          .select('role')
-          .eq('user_id', data.user.id)
-          .maybeSingle()
-        if (profile?.role !== 'Owner Admin') {
-          await supabase.auth.signOut()
-          return 'Admin Console requires the EventPilot admin workspace.'
-        }
+      if (error) {
+        return role === 'staff'
+          ? 'Invalid workspace code, username, or password.'
+          : error.message
       }
+
+      // Enforce that the account tier matches the selected tab (Kaizen pattern):
+      // signing in through the wrong tab is denied rather than silently allowed.
+      const { data: profile } = await supabase
+        .from('eventpilot_profiles')
+        .select('role')
+        .eq('user_id', data.user.id)
+        .maybeSingle()
+      if (profile?.role !== role) {
+        await supabase.auth.signOut()
+        return `This is not a ${ROLE_LABELS[role].en} account.`
+      }
+      if (isAdminRoute && role !== 'top_management') {
+        await supabase.auth.signOut()
+        return 'Admin Console requires a Top Management account.'
+      }
+
       setActiveModule('Dashboard')
       return null
     }
 
-    // Offline sandbox (Supabase not configured): accept the entered identity.
+    // Offline sandbox (Supabase not configured): accept the entered identity,
+    // honouring the selected tier (admin route still forces Top Management).
     setLocalSession({
       authenticated: true,
-      email: email.trim(),
-      role: isAdminRoute ? 'Owner Admin' : 'Client User',
+      email,
+      displayName: role === 'staff' ? identifier.trim() : '',
+      workspaceCode: workspaceCode.trim(),
+      role: isAdminRoute ? 'top_management' : role,
     })
     setActiveModule('Dashboard')
+    return null
+  }
+
+  // Persist the user's display name (Supabase profile row, or offline session).
+  const updateProfileName = async (name: string): Promise<string | null> => {
+    const trimmed = name.trim()
+    if (isSupabaseEnabled && supabase && userId) {
+      const { error } = await supabase
+        .from('eventpilot_profiles')
+        .update({ display_name: trimmed })
+        .eq('user_id', userId)
+      if (error) return error.message
+      auth.setDisplayName(trimmed)
+      return null
+    }
+    setLocalSession((current) => ({ ...current, displayName: trimmed }))
+    return null
+  }
+
+  // Change the sign-in email. In cloud mode Supabase sends a confirmation link
+  // to the new address before the change takes effect.
+  const updateAccountEmail = async (nextEmail: string): Promise<string | null> => {
+    const trimmed = nextEmail.trim()
+    if (isSupabaseEnabled && supabase) {
+      const { error } = await supabase.auth.updateUser({ email: trimmed })
+      return error ? error.message : null
+    }
+    setLocalSession((current) => ({ ...current, email: trimmed }))
+    return null
+  }
+
+  // Change the sign-in password (cloud mode only; offline has no stored secret).
+  const updateAccountPassword = async (nextPassword: string): Promise<string | null> => {
+    if (isSupabaseEnabled && supabase) {
+      const { error } = await supabase.auth.updateUser({ password: nextPassword })
+      return error ? error.message : null
+    }
     return null
   }
 
@@ -1046,7 +1138,7 @@ function App() {
   if (
     !loginSession.authenticated ||
     activeModule === 'Login' ||
-    (isAdminRoute && loginSession.role !== 'Owner Admin')
+    (isAdminRoute && loginSession.role !== 'top_management')
   ) {
     return (
       <LoginView
@@ -1113,7 +1205,12 @@ function App() {
             type="button"
           >
             <Settings size={15} />
-            <span>{loginSession.email || 'Account'}</span>
+            <span className="sidebar-account-identity">
+              <strong>
+                {loginSession.displayName.trim() || loginSession.email || 'Account'}
+              </strong>
+              <small>{ROLE_LABELS[loginSession.role].en}</small>
+            </span>
           </button>
           <button className="sidebar-signout" onClick={handleLogout} type="button">
             <LogOut size={15} />
@@ -1282,9 +1379,12 @@ function App() {
 
           {activeModule === 'Settings' && (
             <SettingsView
+              account={loginSession}
               propertyProfile={propertyProfile}
-              resetSandbox={resetSandbox}
               setPropertyProfile={setPropertyProfile}
+              updateAccountEmail={updateAccountEmail}
+              updateAccountPassword={updateAccountPassword}
+              updateProfileName={updateProfileName}
             />
           )}
         </main>
@@ -1304,12 +1404,16 @@ const LOGIN_COPY: Record<
     eyebrow: string
     title: string
     subtitle: string
+    roleGroupLabel: string
     email: string
+    username: string
+    usernamePlaceholder: string
     password: string
     workspaceCode: string
     required: string
     clientPasswordPlaceholder: string
     adminPasswordPlaceholder: string
+    staffPasswordPlaceholder: string
     submit: string
     passwordTooShort: (min: number) => string
   }
@@ -1321,12 +1425,16 @@ const LOGIN_COPY: Record<
     title: 'Sign in to EventPilot',
     subtitle:
       'Enter your workspace credentials to access bookings, BEOs, client companies, subscription controls, and admin settings.',
+    roleGroupLabel: 'Sign in as',
     email: 'Email address',
+    username: 'Username',
+    usernamePlaceholder: 'Staff username',
     password: 'Password',
     workspaceCode: 'Workspace code',
     required: 'Required',
     clientPasswordPlaceholder: 'Client password',
     adminPasswordPlaceholder: 'Admin password',
+    staffPasswordPlaceholder: 'Staff password',
     submit: 'Enter EventPilot',
     passwordTooShort: (min) => `Password must be at least ${min} characters.`,
   },
@@ -1337,12 +1445,16 @@ const LOGIN_COPY: Record<
     title: 'เข้าสู่ระบบ EventPilot',
     subtitle:
       'กรอกข้อมูลรับรองพื้นที่ทำงานของคุณเพื่อเข้าถึงการจอง BEO บริษัทลูกค้า การควบคุมการสมัครสมาชิก และการตั้งค่าผู้ดูแลระบบ',
+    roleGroupLabel: 'เข้าสู่ระบบในฐานะ',
     email: 'อีเมล',
+    username: 'ชื่อผู้ใช้',
+    usernamePlaceholder: 'ชื่อผู้ใช้พนักงาน',
     password: 'รหัสผ่าน',
     workspaceCode: 'รหัสพื้นที่ทำงาน',
     required: 'จำเป็น',
     clientPasswordPlaceholder: 'รหัสผ่านลูกค้า',
     adminPasswordPlaceholder: 'รหัสผ่านผู้ดูแล',
+    staffPasswordPlaceholder: 'รหัสผ่านพนักงาน',
     submit: 'เข้าสู่ EventPilot',
     passwordTooShort: (min) => `รหัสผ่านต้องมีอย่างน้อย ${min} ตัวอักษร`,
   },
@@ -1354,22 +1466,43 @@ function LoginView({
   isAdminRoute,
 }: {
   adminCredentialSettings: AdminCredentialSettings
-  onSubmit: (email: string, password: string) => Promise<string | null>
+  onSubmit: (
+    role: AuthRole,
+    identifier: string,
+    password: string,
+    workspaceCode: string,
+  ) => Promise<string | null>
   isAdminRoute: boolean
 }) {
+  const [role, setRole] = useState<AuthRole>('top_management')
   const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [workspaceCode, setWorkspaceCode] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [lang, setLang] = useState<LoginLang>('en')
   const t = LOGIN_COPY[lang]
+  const isStaff = role === 'staff'
   const minPasswordLength = isAdminRoute
     ? adminCredentialSettings.minimumPasswordLength
     : 8
   const passwordReady = password.length >= minPasswordLength
-  const loginReady =
-    email.includes('@') && passwordReady && workspaceCode.trim() && !submitting
+  const identifierReady = isStaff
+    ? username.trim() && workspaceCode.trim()
+    : email.includes('@')
+  const loginReady = Boolean(identifierReady) && passwordReady && !submitting
+
+  // Switching tabs clears entered credentials so one tab's input never leaks
+  // into another's sign-in attempt.
+  const selectRole = (next: AuthRole) => {
+    setRole(next)
+    setEmail('')
+    setUsername('')
+    setPassword('')
+    setWorkspaceCode('')
+    setError('')
+  }
 
   const submitLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1381,7 +1514,12 @@ function LoginView({
 
     setError('')
     setSubmitting(true)
-    const failure = await onSubmit(email, password)
+    const failure = await onSubmit(
+      role,
+      isStaff ? username : email,
+      password,
+      workspaceCode,
+    )
     setSubmitting(false)
     if (failure) {
       setError(failure)
@@ -1431,31 +1569,71 @@ function LoginView({
           <p>{t.subtitle}</p>
         </div>
 
+        {!isAdminRoute && (
+          <div className="login-role-tabs" role="tablist" aria-label={t.roleGroupLabel}>
+            {AUTH_ROLES.map((r) => (
+              <button
+                aria-selected={role === r}
+                className={role === r ? 'is-active' : ''}
+                key={r}
+                onClick={() => selectRole(r)}
+                role="tab"
+                type="button"
+              >
+                {ROLE_LABELS[r][lang]}
+              </button>
+            ))}
+          </div>
+        )}
+
         <form className="login-form" onSubmit={submitLogin}>
-          <FormField label={t.email} requiredLabel={t.required} required>
-            <input
-              autoComplete="email"
-              onChange={(event) => setEmail(event.target.value)}
-              required
-              type="email"
-              value={email}
-            />
-          </FormField>
+          {isStaff ? (
+            <>
+              <FormField label={t.workspaceCode} requiredLabel={t.required} required>
+                <input
+                  autoCapitalize="none"
+                  autoComplete="organization"
+                  onChange={(event) => setWorkspaceCode(event.target.value)}
+                  required
+                  value={workspaceCode}
+                />
+              </FormField>
+              <FormField label={t.username} requiredLabel={t.required} required>
+                <input
+                  autoCapitalize="none"
+                  autoComplete="username"
+                  onChange={(event) => setUsername(event.target.value)}
+                  placeholder={t.usernamePlaceholder}
+                  required
+                  value={username}
+                />
+              </FormField>
+            </>
+          ) : (
+            <FormField label={t.email} requiredLabel={t.required} required>
+              <input
+                autoComplete="email"
+                onChange={(event) => setEmail(event.target.value)}
+                required
+                type="email"
+                value={email}
+              />
+            </FormField>
+          )}
           <FormField label={t.password} requiredLabel={t.required} required>
             <input
               autoComplete="current-password"
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={isAdminRoute ? t.adminPasswordPlaceholder : t.clientPasswordPlaceholder}
+              placeholder={
+                isStaff
+                  ? t.staffPasswordPlaceholder
+                  : isAdminRoute
+                    ? t.adminPasswordPlaceholder
+                    : t.clientPasswordPlaceholder
+              }
               required
               type="password"
               value={password}
-            />
-          </FormField>
-          <FormField label={t.workspaceCode} requiredLabel={t.required} required>
-            <input
-              onChange={(event) => setWorkspaceCode(event.target.value)}
-              required
-              value={workspaceCode}
             />
           </FormField>
 
@@ -4083,13 +4261,19 @@ function AdminConsoleView({
 }
 
 function SettingsView({
+  account,
   propertyProfile,
-  resetSandbox,
   setPropertyProfile,
+  updateAccountEmail,
+  updateAccountPassword,
+  updateProfileName,
 }: {
+  account: LoginSession
   propertyProfile: PropertyProfile
-  resetSandbox: () => void
   setPropertyProfile: (value: PropertyProfile) => void
+  updateAccountEmail: (email: string) => Promise<string | null>
+  updateAccountPassword: (password: string) => Promise<string | null>
+  updateProfileName: (name: string) => Promise<string | null>
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<PropertyProfile>(propertyProfile)
@@ -4129,25 +4313,33 @@ function SettingsView({
                 <h2>{propertyProfile.name}</h2>
               )}
             </div>
-            {editing ? (
-              <div className="profile-actions">
-                <button
-                  className="secondary-action"
-                  onClick={() => setEditing(false)}
-                  type="button"
-                >
-                  Cancel
+            <div className="property-profile-aside">
+              {account.workspaceCode.trim() && (
+                <div className="workspace-code-tag">
+                  <span>Workspace code</span>
+                  <strong>{account.workspaceCode.trim()}</strong>
+                </div>
+              )}
+              {editing ? (
+                <div className="profile-actions">
+                  <button
+                    className="secondary-action"
+                    onClick={() => setEditing(false)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button className="primary-action" onClick={saveProfile} type="button">
+                    <CheckCircle2 size={16} />
+                    Save changes
+                  </button>
+                </div>
+              ) : (
+                <button className="secondary-action" onClick={startEditing} type="button">
+                  Edit
                 </button>
-                <button className="primary-action" onClick={saveProfile} type="button">
-                  <CheckCircle2 size={16} />
-                  Save changes
-                </button>
-              </div>
-            ) : (
-              <button className="secondary-action" onClick={startEditing} type="button">
-                Edit
-              </button>
-            )}
+              )}
+            </div>
           </div>
 
           {editing ? (
@@ -4227,6 +4419,13 @@ function SettingsView({
         </div>
       </section>
 
+      <UserProfilePanel
+        account={account}
+        updateAccountEmail={updateAccountEmail}
+        updateAccountPassword={updateAccountPassword}
+        updateProfileName={updateProfileName}
+      />
+
       <section className="panel">
         <PanelHeader title="Roles and permissions" />
         <div className="permission-grid">
@@ -4239,37 +4438,186 @@ function SettingsView({
         </div>
       </section>
 
-      <section className="split-layout">
-        <div className="panel">
-          <PanelHeader title="Local sandbox" />
-          <div className="integration-card">
-            <ShieldCheck size={24} />
-            <div>
-              <strong>Browser local storage</strong>
-              <p>Bookings can be edited locally while the MVP is shaped.</p>
-            </div>
+    </div>
+  )
+}
+
+function UserProfilePanel({
+  account,
+  updateAccountEmail,
+  updateAccountPassword,
+  updateProfileName,
+}: {
+  account: LoginSession
+  updateAccountEmail: (email: string) => Promise<string | null>
+  updateAccountPassword: (password: string) => Promise<string | null>
+  updateProfileName: (name: string) => Promise<string | null>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(account.displayName)
+  const [email, setEmail] = useState(account.email)
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const roleLabel = ROLE_LABELS[account.role].en
+
+  const startEditing = () => {
+    setName(account.displayName)
+    setEmail(account.email)
+    setPassword('')
+    setConfirmPassword('')
+    setError('')
+    setNotice('')
+    setEditing(true)
+  }
+
+  const saveProfile = async () => {
+    setError('')
+    setNotice('')
+
+    const trimmedName = name.trim()
+    const trimmedEmail = email.trim()
+    const wantsPassword = password.length > 0
+
+    if (wantsPassword && password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    if (wantsPassword && password !== confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+    if (trimmedEmail && !trimmedEmail.includes('@')) {
+      setError('Enter a valid email address.')
+      return
+    }
+
+    setSaving(true)
+    const messages: string[] = []
+
+    if (trimmedName !== account.displayName) {
+      const failure = await updateProfileName(trimmedName)
+      if (failure) {
+        setSaving(false)
+        setError(failure)
+        return
+      }
+    }
+
+    if (trimmedEmail && trimmedEmail !== account.email) {
+      const failure = await updateAccountEmail(trimmedEmail)
+      if (failure) {
+        setSaving(false)
+        setError(failure)
+        return
+      }
+      messages.push('Check your new email to confirm the address change.')
+    }
+
+    if (wantsPassword) {
+      const failure = await updateAccountPassword(password)
+      if (failure) {
+        setSaving(false)
+        setError(failure)
+        return
+      }
+      messages.push('Password updated.')
+    }
+
+    setSaving(false)
+    setPassword('')
+    setConfirmPassword('')
+    setNotice(messages.length ? messages.join(' ') : 'Profile updated.')
+    setEditing(false)
+  }
+
+  return (
+    <section className="panel">
+      <div className="property-profile">
+        <div className="property-profile-head">
+          <div>
+            <p className="eyebrow">User profile</p>
+            <h2>{account.displayName.trim() || account.email || 'Your account'}</h2>
           </div>
-          <button className="secondary-action full-width" onClick={resetSandbox} type="button">
-            <RefreshCcw size={16} />
-            Reset demo data
-          </button>
+          {editing ? (
+            <div className="profile-actions">
+              <button
+                className="secondary-action"
+                disabled={saving}
+                onClick={() => setEditing(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-action"
+                disabled={saving}
+                onClick={saveProfile}
+                type="button"
+              >
+                <CheckCircle2 size={16} />
+                Save changes
+              </button>
+            </div>
+          ) : (
+            <button className="secondary-action" onClick={startEditing} type="button">
+              Edit
+            </button>
+          )}
         </div>
 
-        <div className="panel">
-          <PanelHeader title="Future migration" />
-          <div className="integration-card muted-card">
-            <Building2 size={24} />
-            <div>
-              <strong>Supabase and DNS deferred</strong>
-              <p>
-                Database, auth, storage, production hosting, and nnr-solutions.com
-                DNS are intentionally parked for the next phase.
-              </p>
-            </div>
+        {editing ? (
+          <div className="profile-edit-grid">
+            <FormField label="Full name">
+              <input
+                autoComplete="name"
+                onChange={(event) => setName(event.target.value)}
+                placeholder="e.g. Poti"
+                value={name}
+              />
+            </FormField>
+            <FormField label="Sign-in email">
+              <input
+                autoComplete="email"
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                value={email}
+              />
+            </FormField>
+            <FormField label="New password">
+              <input
+                autoComplete="new-password"
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Leave blank to keep current"
+                type="password"
+                value={password}
+              />
+            </FormField>
+            <FormField label="Confirm new password">
+              <input
+                autoComplete="new-password"
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                placeholder="Re-enter new password"
+                type="password"
+                value={confirmPassword}
+              />
+            </FormField>
+            {error && <p className="login-error">{error}</p>}
           </div>
-        </div>
-      </section>
-    </div>
+        ) : (
+          <div className="profile-grid">
+            <Detail label="Sign-in email" value={account.email || '—'} />
+            <Detail label="Access level" value={roleLabel} />
+            <Detail label="Password" value="••••••••" />
+          </div>
+        )}
+
+        {!editing && notice && <p className="profile-notice">{notice}</p>}
+      </div>
+    </section>
   )
 }
 
