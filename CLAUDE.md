@@ -24,8 +24,10 @@ Use `npm run typecheck`, `npm run lint`, and `npm run build` when validating cha
 - `src/App.tsx` contains the primary application UI and behavior.
 - `src/data.ts` contains seeded demonstration data.
 - `src/App.css` and `src/index.css` contain the active styling.
-- Navigation uses URL hash routes such as `#Dashboard` and `#BEOs`; the admin
-  portal is the real path `/admin`.
+- Navigation uses URL hash routes such as `#Dashboard` and `#BEOs`; the vendor
+  console is the real path `/admin`.
+- `src/consoleClient.ts` talks to the `eventpilot-console` edge function for the
+  vendor console's own login and session.
 - `src/supabaseClient.ts` initializes Supabase (only when `VITE_SUPABASE_URL`
   and `VITE_SUPABASE_ANON_KEY` are set).
 
@@ -41,13 +43,25 @@ Use `npm run typecheck`, `npm run lint`, and `npm run build` when validating cha
 - Top Management can edit every user's tier from Settings. RLS lets them
   read/update all profiles, and a database trigger blocks role changes by
   anyone else and refuses to demote the last Top Management account.
+- The `/admin` vendor console is a **separate authority plane**: it does not use
+  Supabase Auth at all. Operators live in `eventpilot_console_admins` and sign
+  in with a username/password through the `eventpilot-console` edge function,
+  which issues a 30-minute HMAC token held in `sessionStorage`. A customer's own
+  Top Management account cannot reach `/admin`. See `supabase/README.md` for the
+  required function secrets and how to seed the first operator.
 - App state persists per-user to the `eventpilot_app_state` table (one JSON row
   per storage key), guarded by row-level security. `useSyncedState` in
   `App.tsx` hydrates from Supabase, seeds on first login, and writes through.
 - When Supabase env vars are blank the app falls back to fully-offline
   localStorage mode, so `npm run dev` works with no backend.
-- Backend lives in the shared "Na Nirand" Supabase project; all Event Pilot
-  tables are `eventpilot_`-prefixed to stay isolated from other apps there.
+- Backend lives in the "Na Nirand" Supabase project (ref `uwswaeazowhtrpktakhx`),
+  shared with the Na Nirand **marketing site** (`subscribers`, `page_views`,
+  `contact_submissions`, etc.). All Event Pilot tables are `eventpilot_`-prefixed
+  to stay isolated from it.
+- The Kaizen System is a **separate app in a separate Supabase project**
+  (ref `znxqmurhjtyfsotcorfj`). Event Pilot and Kaizen share no tables,
+  functions, or auth. Event Pilot mirrors some of Kaizen's patterns by design,
+  but never its objects — do not couple the two.
 - Schema is version-controlled in `supabase/migrations/` (see
   `supabase/README.md`). Those files are already applied to the live project —
   do not re-run them against it.

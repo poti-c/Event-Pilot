@@ -18,6 +18,8 @@ import {
   FileText,
   Filter,
   LayoutDashboard,
+  LayoutGrid,
+  List,
   LogOut,
   MapPinned,
   Plus,
@@ -38,11 +40,19 @@ import type { Session } from '@supabase/supabase-js'
 import './App.css'
 import { isSupabaseEnabled, supabase } from './supabaseClient'
 import {
+  clearConsoleSession,
+  consoleCall,
+  consoleLogin,
+  readConsoleSession,
+  verifyConsoleSession,
+} from './consoleClient'
+import type { ConsoleSession } from './consoleClient'
+import {
   accounts,
   initialBookings,
+  leads as initialLeads,
   naNirandProfile,
-  opportunities,
-  products,
+  products as initialProducts,
   rolePermissions,
   tasks,
   venues,
@@ -50,8 +60,14 @@ import {
 import type {
   Account,
   BookingStatus,
+  Discount,
+  DiscountMode,
   EventBooking,
+  Lead,
+  LeadStage,
+  LineItem,
   PaymentStatus,
+  Product,
   PropertyProfile,
 } from './data'
 
@@ -94,6 +110,23 @@ const navItems: NavItem[] = [
   { id: 'Settings', label: 'Settings', icon: Settings },
 ]
 
+const NAV_ACTION: Partial<Record<ModuleId, Action>> = {
+  Leads: 'nav:Leads',
+  CRM: 'nav:CRM',
+  Proposals: 'nav:Proposals',
+  Invoices: 'nav:Invoices',
+  Packages: 'nav:Packages',
+  Venues: 'nav:Venues',
+  Reports: 'nav:Reports',
+}
+
+function visibleNavItems(role: AuthRole): NavItem[] {
+  return navItems.filter((item) => {
+    const action = NAV_ACTION[item.id]
+    return !action || hasPermission(role, action)
+  })
+}
+
 const moduleIds: ModuleId[] = [
   ...navItems.map((item) => item.id),
   'Login',
@@ -110,6 +143,17 @@ function getModuleFromHash(): ModuleId {
 function moduleTitle(module: ModuleId) {
   if (module === 'Login') return 'Login'
   return module === 'NewBooking' ? 'New booking' : module
+}
+
+const LEAD_STAGES: LeadStage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost']
+
+const LEAD_STAGE_PROBABILITY: Record<LeadStage, number> = {
+  New: 10,
+  Contacted: 25,
+  Qualified: 45,
+  'Proposal Sent': 65,
+  Won: 100,
+  Lost: 0,
 }
 
 const statusOrder: BookingStatus[] = [
@@ -220,6 +264,245 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
   return [value, setStoredValue] as const
 }
 
+/**
+ * A Thai address kept in both scripts. Thai tax invoices are legally rendered
+ * in Thai, but the console is usable in English, so place names are stored
+ * twice rather than transliterated at render time.
+ */
+type ThaiAddress = {
+  house_no: string
+  soi: string
+  road: string
+  subdistrict: string
+  subdistrict_en: string
+  district: string
+  district_en: string
+  province: string
+  province_en: string
+  postcode: string
+  country: string
+}
+
+const emptyAddress: ThaiAddress = {
+  house_no: '',
+  soi: '',
+  road: '',
+  subdistrict: '',
+  subdistrict_en: '',
+  district: '',
+  district_en: '',
+  province: '',
+  province_en: '',
+  postcode: '',
+  country: 'Thailand',
+}
+
+/** The issuer identity stamped onto every billing document. */
+type IssuerSettings = {
+  company_name: string
+  company_name_th: string
+  tax_id: string
+  office_type: 'head_office' | 'branch'
+  branch_code: string
+  billing_address: ThaiAddress
+  phone: string
+  email: string
+  website: string
+  logo_url: string
+  signatory_name: string
+  signatory_title: string
+  promptpay_id: string
+  promptpay_name: string
+  support_email: string
+}
+
+const emptyIssuer: IssuerSettings = {
+  company_name: '',
+  company_name_th: '',
+  tax_id: '',
+  office_type: 'head_office',
+  branch_code: '',
+  billing_address: emptyAddress,
+  phone: '',
+  email: '',
+  website: '',
+  logo_url: '',
+  signatory_name: '',
+  signatory_title: '',
+  promptpay_id: '',
+  promptpay_name: '',
+  support_email: '',
+}
+
+function rowToIssuer(row: Record<string, unknown> | null): IssuerSettings {
+  if (!row) return emptyIssuer
+  return {
+    ...emptyIssuer,
+    ...Object.fromEntries(
+      Object.entries(row).filter(([key, value]) => key in emptyIssuer && value !== null),
+    ),
+    billing_address: {
+      ...emptyAddress,
+      ...((row.billing_address as Partial<ThaiAddress> | null) ?? {}),
+    },
+  } as IssuerSettings
+}
+
+/** Loads and saves the single issuer settings row. */
+function useIssuerSettings(enabled: boolean) {
+  const [issuer, setIssuer] = useState<IssuerSettings>(emptyIssuer)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!enabled) return
+    let active = true
+    void (async () => {
+      try {
+        const data = await consoleCall('get_settings')
+        if (!active) return
+        setIssuer(rowToIssuer(data.settings as Record<string, unknown> | null))
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err.message : 'Could not load settings.')
+      } finally {
+        if (active) setReady(true)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [enabled])
+
+  // Saved explicitly rather than on a debounce: these values end up on legal
+  // documents, so an operator should decide when they are committed.
+  const save = useCallback(async (next: IssuerSettings): Promise<string | null> => {
+    try {
+      const data = await consoleCall('update_settings', { settings: next })
+      setIssuer(rowToIssuer(data.settings as Record<string, unknown> | null))
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Could not save settings.'
+    }
+  }, [])
+
+  return { issuer, setIssuer, save, ready, error }
+}
+
+/** Maps a eventpilot_client_companies row onto the console's ClientCompany shape. */
+function rowToClient(row: Record<string, unknown>): ClientCompany {
+  const status = String(row.account_status ?? 'active')
+  return {
+    id: String(row.id),
+    companyName: String(row.name ?? ''),
+    propertyType: String(row.property_type ?? ''),
+    planId: (row.plan as SaaSTierId) ?? 'Starter',
+    status: ((status.charAt(0).toUpperCase() + status.slice(1)) as ClientAccountStatus),
+    adminEmail: String(row.contact_email ?? ''),
+    renewalDate: String(row.renewal_date ?? ''),
+    activeUsers: Number(row.active_users ?? 0),
+    userLimitOverride: Number(row.allowed_users ?? 0),
+    bookingLimitOverride: Number(row.booking_limit ?? 0),
+    supportOwner: String(row.support_owner ?? ''),
+    notes: String(row.notes ?? ''),
+  }
+}
+
+function clientToRow(client: ClientCompany): Record<string, unknown> {
+  return {
+    id: client.id,
+    name: client.companyName,
+    property_type: client.propertyType,
+    plan: client.planId,
+    account_status: client.status.toLowerCase(),
+    contact_email: client.adminEmail,
+    renewal_date: client.renewalDate || null,
+    active_users: client.activeUsers,
+    allowed_users: client.userLimitOverride,
+    booking_limit: client.bookingLimitOverride,
+    support_owner: client.supportOwner,
+    notes: client.notes,
+  }
+}
+
+/**
+ * The console's client roster, backed by the shared
+ * eventpilot_client_companies table rather than per-user app state.
+ *
+ * Edits stay local while typing and are flushed to the server on a short
+ * debounce, so the existing keystroke-level UI keeps working without issuing a
+ * request per character.
+ */
+function useConsoleClients(enabled: boolean) {
+  const [clients, setClients] = useState<ClientCompany[]>([])
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState('')
+  const pending = useRef(new Map<string, ClientCompany>())
+  const timer = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!enabled) return
+    let active = true
+    void (async () => {
+      try {
+        const data = await consoleCall('list_clients')
+        if (!active) return
+        const rows = (data.clients as Record<string, unknown>[] | undefined) ?? []
+        setClients(rows.map(rowToClient))
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err.message : 'Could not load clients.')
+      } finally {
+        if (active) setReady(true)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [enabled])
+
+  const flush = useCallback(async () => {
+    const queued = [...pending.current.values()]
+    pending.current.clear()
+    for (const client of queued) {
+      try {
+        await consoleCall('upsert_client', { client: clientToRow(client) })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not save client.')
+      }
+    }
+  }, [])
+
+  const update = useCallback(
+    (next: ClientCompany[] | ((current: ClientCompany[]) => ClientCompany[])) => {
+      setClients((current) => {
+        const resolved = typeof next === 'function' ? next(current) : next
+        // Queue only the rows that actually changed.
+        for (const client of resolved) {
+          const before = current.find((item) => item.id === client.id)
+          if (!before || JSON.stringify(before) !== JSON.stringify(client)) {
+            pending.current.set(client.id, client)
+          }
+        }
+        if (timer.current) window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(() => void flush(), 700)
+        return resolved
+      })
+    },
+    [flush],
+  )
+
+  // Don't lose the last keystrokes if the tab closes mid-debounce.
+  useEffect(() => {
+    if (!enabled) return
+    const onHide = () => {
+      if (pending.current.size) void flush()
+    }
+    window.addEventListener('beforeunload', onHide)
+    return () => window.removeEventListener('beforeunload', onHide)
+  }, [enabled, flush])
+
+  return { clients, setClients: update, ready, error, reload: setClients }
+}
+
 type AuthState = {
   userId: string | null
   email: string
@@ -323,6 +606,79 @@ function priceLabel(value: number | null) {
   return value === null ? 'Quote required' : money(value)
 }
 
+// Existing bookings have no lineItems yet — derive a sensible starting point
+// from their package/menu/AV/staffing tags so proposals/invoices never render
+// blank until someone edits them.
+function deriveLineItemsFromBooking(booking: EventBooking): LineItem[] {
+  const tags = [
+    ...(booking.packageName ? [booking.packageName] : []),
+    ...booking.menu,
+    ...booking.av,
+    ...booking.staffing,
+  ]
+  if (!tags.length) {
+    return [
+      {
+        id: `${booking.id}-derived`,
+        description: booking.eventName,
+        quantity: 1,
+        unitPrice: booking.forecastRevenue,
+      },
+    ]
+  }
+  const perItem = booking.forecastRevenue / tags.length
+  return tags.map((tag, index) => ({
+    id: `${booking.id}-derived-${index}`,
+    description: tag,
+    quantity: 1,
+    unitPrice: Math.round(perItem),
+  }))
+}
+
+function getLineItems(booking: EventBooking): LineItem[] {
+  return booking.lineItems && booking.lineItems.length
+    ? booking.lineItems
+    : deriveLineItemsFromBooking(booking)
+}
+
+function getDiscount(booking: EventBooking): Discount {
+  return booking.discount ?? { mode: 'none', value: 0 }
+}
+
+// Uses the real Web Share API where the browser supports it; otherwise copies
+// the summary to the clipboard so the action still does something real
+// rather than just logging a fake local activity entry.
+async function shareDocument(
+  payload: { title: string; text: string },
+  onCopied: () => void,
+) {
+  if (navigator.share) {
+    try {
+      await navigator.share(payload)
+      return
+    } catch {
+      // User cancelled the native share sheet — nothing further to do.
+      return
+    }
+  }
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(`${payload.title}\n${payload.text}`)
+    onCopied()
+  }
+}
+
+function discountAmount(subtotal: number, discount: Discount): number {
+  switch (discount.mode) {
+    case 'percent':
+      return subtotal * (discount.value / 100)
+    case 'value':
+    case 'promo':
+      return Math.min(discount.value, subtotal)
+    default:
+      return 0
+  }
+}
+
 function capacityLabel(value: number | null) {
   return value === null ? 'TBC' : value.toString()
 }
@@ -361,6 +717,121 @@ function offsetMonth(value: string, offset: number) {
   const date = monthKeyToDate(value)
   date.setMonth(date.getMonth() + offset)
   return toMonthKey(date)
+}
+
+function monthLabel(monthKey: string) {
+  return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(
+    monthKeyToDate(monthKey),
+  )
+}
+
+function uniqueSorted(values: string[]) {
+  return [...new Set(values)].sort()
+}
+
+function availableMonthsOf<T>(items: T[], getDate: (item: T) => string) {
+  return uniqueSorted(items.map((item) => toMonthKey(toLocalDate(getDate(item)))))
+}
+
+function availableYearsOf<T>(items: T[], getDate: (item: T) => string) {
+  return uniqueSorted(items.map((item) => getDate(item).slice(0, 4)))
+}
+
+type ListViewMode = 'grid' | 'list'
+type TimeFilterMode = 'All' | 'Month' | 'Year'
+
+function filterAndSortByTime<T>(
+  items: T[],
+  getDate: (item: T) => string,
+  timeFilter: TimeFilterMode,
+  selectedMonth: string,
+  selectedYear: string,
+) {
+  const filtered = items.filter((item) => {
+    if (timeFilter === 'Month') return toMonthKey(toLocalDate(getDate(item))) === selectedMonth
+    if (timeFilter === 'Year') return getDate(item).slice(0, 4) === selectedYear
+    return true
+  })
+  return [...filtered].sort((first, second) => getDate(first).localeCompare(getDate(second)))
+}
+
+function ListViewControls({
+  availableMonths,
+  availableYears,
+  selectedMonth,
+  selectedYear,
+  setSelectedMonth,
+  setSelectedYear,
+  setTimeFilter,
+  setViewMode,
+  timeFilter,
+  viewMode,
+}: {
+  availableMonths: string[]
+  availableYears: string[]
+  selectedMonth: string
+  selectedYear: string
+  setSelectedMonth: (month: string) => void
+  setSelectedYear: (year: string) => void
+  setTimeFilter: (mode: TimeFilterMode) => void
+  setViewMode: (mode: ListViewMode) => void
+  timeFilter: TimeFilterMode
+  viewMode: ListViewMode
+}) {
+  return (
+    <div className="list-controls">
+      <div className="segmented-control">
+        {(['All', 'Month', 'Year'] as TimeFilterMode[]).map((mode) => (
+          <button
+            className={timeFilter === mode ? 'segment active' : 'segment'}
+            key={mode}
+            onClick={() => setTimeFilter(mode)}
+            type="button"
+          >
+            {mode === 'All' ? 'Display all' : mode}
+          </button>
+        ))}
+        {timeFilter === 'Month' && (
+          <select onChange={(event) => setSelectedMonth(event.target.value)} value={selectedMonth}>
+            {availableMonths.map((month) => (
+              <option key={month} value={month}>
+                {monthLabel(month)}
+              </option>
+            ))}
+          </select>
+        )}
+        {timeFilter === 'Year' && (
+          <select onChange={(event) => setSelectedYear(event.target.value)} value={selectedYear}>
+            {availableYears.map((year) => (
+              <option key={year} value={year}>
+                {year}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      <div className="view-toggle">
+        <button
+          aria-label="Grid view"
+          aria-pressed={viewMode === 'grid'}
+          className={viewMode === 'grid' ? 'icon-toggle active' : 'icon-toggle'}
+          onClick={() => setViewMode('grid')}
+          type="button"
+        >
+          <LayoutGrid size={16} />
+        </button>
+        <button
+          aria-label="List view"
+          aria-pressed={viewMode === 'list'}
+          className={viewMode === 'list' ? 'icon-toggle active' : 'icon-toggle'}
+          onClick={() => setViewMode('list')}
+          type="button"
+        >
+          <List size={16} />
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function statusClass(status: string) {
@@ -441,10 +912,19 @@ type NewBookingFormState = {
   forecastRevenue: string
   depositDue: string
   nextAction: string
-  menu: string
+  appetizer: string
+  soup: string
+  mainCourse: string
+  dessert: string
+  beverage: string
+  dietaryNotes: string
+  housekeeping: string
   av: string
   staffing: string
+  frontOffice: string
   vendors: string
+  billingCompany: string
+  paymentMethod: string
   specialRequests: string
   clientNotes: string
   internalNotes: string
@@ -474,10 +954,19 @@ function getNewBookingDefaults(): NewBookingFormState {
     forecastRevenue: '',
     depositDue: '',
     nextAction: 'Qualify requirements and send proposal',
-    menu: '',
+    appetizer: '',
+    soup: '',
+    mainCourse: '',
+    dessert: '',
+    beverage: '',
+    dietaryNotes: '',
+    housekeeping: '',
     av: '',
     staffing: '',
+    frontOffice: '',
     vendors: '',
+    billingCompany: '',
+    paymentMethod: '',
     specialRequests: '',
     clientNotes: '',
     internalNotes: '',
@@ -486,7 +975,7 @@ function getNewBookingDefaults(): NewBookingFormState {
 
 type SaaSTierId = 'Starter' | 'Gold' | 'Platinum'
 type ClientAccountStatus = 'Active' | 'Pilot' | 'Suspended'
-type AdminConsoleTab = 'Clients' | 'Plans' | 'Security'
+type AdminConsoleTab = 'Clients' | 'Plans' | 'Company' | 'Security'
 
 type SaaSPlan = {
   id: SaaSTierId
@@ -557,6 +1046,64 @@ const ROLE_LABELS: Record<AuthRole, { en: string; th: string }> = {
   top_management: { en: 'Top Management', th: 'ผู้บริหารระดับสูง' },
   manager: { en: 'Managers', th: 'ผู้จัดการ' },
   staff: { en: 'Staff', th: 'พนักงาน' },
+}
+
+/**
+ * Single source of truth for tier-based access, mirroring the descriptions in
+ * `rolePermissions` (data.ts): Top Management has full access; Managers cover
+ * day-to-day operations but not admin/billing/user management; Staff get
+ * assigned-work views only (no create/delete, no admin, no packages edit).
+ */
+type Action =
+  | 'nav:Leads'
+  | 'nav:CRM'
+  | 'nav:Proposals'
+  | 'nav:Invoices'
+  | 'nav:Packages'
+  | 'nav:Venues'
+  | 'nav:Reports'
+  | 'booking:create'
+  | 'booking:advanceStatus'
+  | 'booking:fallBackStatus'
+  | 'packages:edit'
+  | 'leads:create'
+  | 'leads:edit'
+  | 'leads:delete'
+  | 'proposal:edit'
+  | 'admin:settings'
+  | 'admin:userManagement'
+
+const STAFF_ACTIONS: Action[] = ['booking:advanceStatus']
+const MANAGER_ONLY_ADDITIONS: Action[] = [
+  'nav:Leads',
+  'nav:CRM',
+  'nav:Proposals',
+  'nav:Invoices',
+  'nav:Packages',
+  'nav:Venues',
+  'nav:Reports',
+  'booking:create',
+  'booking:advanceStatus',
+  'booking:fallBackStatus',
+  'leads:create',
+  'leads:edit',
+  'leads:delete',
+  'proposal:edit',
+]
+const TOP_MANAGEMENT_ONLY_ADDITIONS: Action[] = ['packages:edit', 'admin:settings', 'admin:userManagement']
+
+const PERMISSIONS: Record<AuthRole, Set<Action>> = {
+  staff: new Set(STAFF_ACTIONS),
+  manager: new Set([...STAFF_ACTIONS, ...MANAGER_ONLY_ADDITIONS]),
+  top_management: new Set([
+    ...STAFF_ACTIONS,
+    ...MANAGER_ONLY_ADDITIONS,
+    ...TOP_MANAGEMENT_ONLY_ADDITIONS,
+  ]),
+}
+
+function hasPermission(role: AuthRole, action: Action): boolean {
+  return PERMISSIONS[role].has(action)
 }
 
 // Staff sign in with a username scoped to their workspace code; the auth email is
@@ -700,37 +1247,6 @@ const initialExpansionPacks: ExpansionPack[] = [
   },
 ]
 
-const initialClientCompanies: ClientCompany[] = [
-  {
-    id: 'CLIENT-NNR',
-    companyName: 'Na Nirand Romantic Boutique Resort',
-    propertyType: 'Boutique resort',
-    planId: 'Platinum',
-    status: 'Pilot',
-    adminEmail: 'admin@nanirand.example',
-    renewalDate: '2027-06-05',
-    activeUsers: 4,
-    userLimitOverride: 5,
-    bookingLimitOverride: 0,
-    supportOwner: 'EventPilot Admin',
-    notes: 'Pilot account for local sandbox validation before Supabase migration.',
-  },
-  {
-    id: 'CLIENT-SME-01',
-    companyName: 'Siam Riverside Events',
-    propertyType: 'SME hotel',
-    planId: 'Gold',
-    status: 'Active',
-    adminEmail: 'events@siamriverside.example',
-    renewalDate: '2027-01-31',
-    activeUsers: 1,
-    userLimitOverride: 1,
-    bookingLimitOverride: 0,
-    supportOwner: 'Sales Ops',
-    notes: 'Single-user annual subscription candidate.',
-  },
-]
-
 const initialAdminCredentialSettings: AdminCredentialSettings = {
   adminName: 'EventPilot Owner',
   adminEmail: 'admin.eventpilot@nnr-solutions.com',
@@ -759,6 +1275,9 @@ function App() {
   const auth = useSupabaseAuth()
   // Offline sandbox session (used only when Supabase is not configured).
   const [localSession, setLocalSession] = useState<LoginSession>(initialLoginSession)
+  // Vendor console session — entirely independent of the customer auth above.
+  const [consoleSession, setConsoleSession] = useState<ConsoleSession | null>(null)
+  const [consoleReady, setConsoleReady] = useState(!isAdminRoute)
   const userId = auth.userId
   const loginSession: LoginSession = isSupabaseEnabled
     ? {
@@ -775,11 +1294,9 @@ function App() {
     initialBookings,
     userId,
   )
-  const [clientCompanies, setClientCompanies] = useSyncedState(
-    'eventpilot.admin.clients.v1',
-    initialClientCompanies,
-    userId,
-  )
+  // The vendor console's roster comes from the shared table, not per-user app
+  // state, so every operator sees the same customers.
+  const consoleClients = useConsoleClients(isAdminRoute && Boolean(consoleSession))
   const [adminPlans, setAdminPlans] = useSyncedState(
     'eventpilot.admin.plans.v1',
     initialSaasPlans,
@@ -800,7 +1317,21 @@ function App() {
     naNirandProfile,
     userId,
   )
+  const [leads, setLeads] = useSyncedState(
+    'eventpilot.leads.v1',
+    initialLeads,
+    userId,
+  )
+  const [products, setProducts] = useSyncedState(
+    'eventpilot.products.v1',
+    initialProducts,
+    userId,
+  )
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
+  // null = show the list; a booking id = show that document's detail with a back button.
+  const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
+  const [proposalViewBookingId, setProposalViewBookingId] = useState<string | null>(null)
+  const [invoiceViewBookingId, setInvoiceViewBookingId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -812,6 +1343,22 @@ function App() {
     window.addEventListener('hashchange', handleHashChange)
     return () => window.removeEventListener('hashchange', handleHashChange)
   }, [])
+
+  // Restore a console session on reload, confirming it server-side so a stale
+  // or revoked token drops straight back to the console login.
+  useEffect(() => {
+    if (!isAdminRoute) return
+    let active = true
+    void (async () => {
+      const valid = await verifyConsoleSession()
+      if (!active) return
+      setConsoleSession(valid ? readConsoleSession() : null)
+      setConsoleReady(true)
+    })()
+    return () => {
+      active = false
+    }
+  }, [isAdminRoute])
 
   useEffect(() => {
     const nextHash = activeModule.replace(/\s+/g, '-')
@@ -855,6 +1402,9 @@ function App() {
 
   const selectedBooking =
     bookings.find((booking) => booking.id === selectedBookingId) ?? bookings[0]
+  const beoViewBooking = bookings.find((booking) => booking.id === beoViewBookingId)
+  const proposalViewBooking = bookings.find((booking) => booking.id === proposalViewBookingId)
+  const invoiceViewBooking = bookings.find((booking) => booking.id === invoiceViewBookingId)
 
   const filteredBookings = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -893,8 +1443,9 @@ function App() {
         : sum + booking.forecastRevenue,
     0,
   )
-  const pipelineRevenue = opportunities.reduce(
-    (sum, opportunity) => sum + opportunity.expectedRevenue,
+  const openLeads = leads.filter((lead) => lead.stage !== 'Won' && lead.stage !== 'Lost')
+  const pipelineRevenue = openLeads.reduce(
+    (sum, lead) => sum + lead.estimatedValue,
     0,
   )
   const overdueFollowUps = bookings.filter((booking) =>
@@ -996,11 +1547,72 @@ function App() {
     }
   }
 
+  const appendBeoHistory = (bookingId: string, note: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              beoHistory: [
+                ...(booking.beoHistory ?? []),
+                { id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note },
+              ],
+            }
+          : booking,
+      ),
+    )
+  }
+
+  const appendDocumentHistory = (bookingId: string, note: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              documentHistory: [
+                ...(booking.documentHistory ?? []),
+                { id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note },
+              ],
+            }
+          : booking,
+      ),
+    )
+  }
+
+  const markClientApproved = (bookingId: string) => {
+    const today = toDateKey(new Date())
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              clientApprovedAt: today,
+              beoHistory: [
+                ...(booking.beoHistory ?? []),
+                { id: `HIST-${Date.now()}`, timestamp: today, note: 'Client approved' },
+              ],
+            }
+          : booking,
+      ),
+    )
+  }
+
   const markBeoRevised = (bookingId: string) => {
     setBookings((currentBookings) =>
       currentBookings.map((booking) =>
         booking.id === bookingId
-          ? { ...booking, revision: booking.revision + 1 }
+          ? {
+              ...booking,
+              revision: booking.revision + 1,
+              beoHistory: [
+                ...(booking.beoHistory ?? []),
+                {
+                  id: `HIST-${Date.now()}`,
+                  timestamp: toDateKey(new Date()),
+                  note: `Marked as Rev ${booking.revision + 1}`,
+                },
+              ],
+            }
           : booking,
       ),
     )
@@ -1013,6 +1625,18 @@ function App() {
     }
   }
 
+  const updateBookingLineItems = (
+    bookingId: string,
+    lineItems: LineItem[],
+    discount: Discount,
+  ) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId ? { ...booking, lineItems, discount } : booking,
+      ),
+    )
+  }
+
   const createBooking = (booking: EventBooking) => {
     setBookings((currentBookings) => [booking, ...currentBookings])
     setSelectedBookingId(booking.id)
@@ -1023,6 +1647,23 @@ function App() {
       'Booking created',
       `${booking.eventName} was added locally with ${booking.beoNumber}.`,
     )
+  }
+
+  // Vendor console sign-in (see src/consoleClient.ts). Separate credentials,
+  // separate token, no Supabase Auth involvement.
+  const handleConsoleLogin = async (
+    username: string,
+    password: string,
+  ): Promise<string | null> => {
+    const failure = await consoleLogin(username, password)
+    if (failure) return failure
+    setConsoleSession(readConsoleSession())
+    return null
+  }
+
+  const handleConsoleLogout = () => {
+    clearConsoleSession()
+    setConsoleSession(null)
   }
 
   // Returns an error message on failure, or null on success. `identifier` is an
@@ -1059,23 +1700,18 @@ function App() {
         await supabase.auth.signOut()
         return `This is not a ${ROLE_LABELS[role].en} account.`
       }
-      if (isAdminRoute && role !== 'top_management') {
-        await supabase.auth.signOut()
-        return 'Admin Console requires a Top Management account.'
-      }
-
       setActiveModule('Dashboard')
       return null
     }
 
     // Offline sandbox (Supabase not configured): accept the entered identity,
-    // honouring the selected tier (admin route still forces Top Management).
+    // honouring the selected tier.
     setLocalSession({
       authenticated: true,
       email,
       displayName: role === 'staff' ? identifier.trim() : '',
       workspaceCode: workspaceCode.trim(),
-      role: isAdminRoute ? 'top_management' : role,
+      role,
     })
     setActiveModule('Dashboard')
     return null
@@ -1118,6 +1754,16 @@ function App() {
     return null
   }
 
+  // Nav clicks always land on a module's list (not whatever document was last
+  // open) — a specific document is only opened via an explicit deep link
+  // (e.g. "Open BEO" from a proposal), which sets the view-booking-id itself.
+  const openModule = (id: ModuleId) => {
+    setActiveModule(id)
+    if (id === 'BEOs') setBeoViewBookingId(null)
+    if (id === 'Proposals') setProposalViewBookingId(null)
+    if (id === 'Invoices') setInvoiceViewBookingId(null)
+  }
+
   const handleLogout = async () => {
     if (isSupabaseEnabled && supabase) {
       await supabase.auth.signOut()
@@ -1129,45 +1775,47 @@ function App() {
     setActiveModule('Login')
   }
 
+  // The vendor console is a separate authority plane: it never consults the
+  // customer Supabase session, so no customer account — not even a Top
+  // Management one — can reach it. Checked before the customer auth gate.
+  if (isAdminRoute) {
+    if (!consoleReady) {
+      return <main className="login-shell" aria-busy="true" />
+    }
+    if (!consoleSession) {
+      return <ConsoleLoginView onSubmit={handleConsoleLogin} />
+    }
+    return (
+      <AdminPortal
+        adminCredentialSettings={adminCredentialSettings}
+        adminPlans={adminPlans}
+        clientCompanies={consoleClients.clients}
+        clientsError={consoleClients.error}
+        clientsReady={consoleClients.ready}
+        consoleSession={consoleSession}
+        expansionPacks={expansionPacks}
+        handleLogout={handleConsoleLogout}
+        setAdminCredentialSettings={setAdminCredentialSettings}
+        setAdminPlans={setAdminPlans}
+        setClientCompanies={consoleClients.setClients}
+        setExpansionPacks={setExpansionPacks}
+      />
+    )
+  }
+
   // Wait for the Supabase session to resolve before deciding what to render,
   // so we don't briefly flash the login screen for an already-signed-in user.
   if (isSupabaseEnabled && !auth.ready) {
     return <main className="login-shell" aria-busy="true" />
   }
 
-  if (
-    !loginSession.authenticated ||
-    activeModule === 'Login' ||
-    (isAdminRoute && loginSession.role !== 'top_management')
-  ) {
-    return (
-      <LoginView
-        adminCredentialSettings={adminCredentialSettings}
-        onSubmit={handleLoginSubmit}
-        isAdminRoute={isAdminRoute}
-      />
-    )
-  }
-
-  if (isAdminRoute) {
-    return (
-      <AdminPortal
-        adminCredentialSettings={adminCredentialSettings}
-        adminPlans={adminPlans}
-        clientCompanies={clientCompanies}
-        expansionPacks={expansionPacks}
-        handleLogout={handleLogout}
-        setAdminCredentialSettings={setAdminCredentialSettings}
-        setAdminPlans={setAdminPlans}
-        setClientCompanies={setClientCompanies}
-        setExpansionPacks={setExpansionPacks}
-      />
-    )
+  if (!loginSession.authenticated || activeModule === 'Login') {
+    return <LoginView onSubmit={handleLoginSubmit} />
   }
 
   return (
     <div className="platform-shell">
-      <aside className="sidebar" aria-label="Main navigation">
+      <aside className="sidebar no-print" aria-label="Main navigation">
         <div className="brand-block">
           <div className="brand-mark">
             <img alt="" src="/brand/eventpilot-command-icon.svg" />
@@ -1179,13 +1827,13 @@ function App() {
         </div>
 
         <nav className="nav-list">
-          {navItems.map((item) => {
+          {visibleNavItems(loginSession.role).map((item) => {
             const Icon = item.icon
             return (
               <button
                 className={activeModule === item.id ? 'nav-item active' : 'nav-item'}
                 key={item.id}
-                onClick={() => setActiveModule(item.id)}
+                onClick={() => openModule(item.id)}
                 aria-current={activeModule === item.id ? 'page' : undefined}
                 type="button"
               >
@@ -1220,7 +1868,7 @@ function App() {
       </aside>
 
       <div className="workbench">
-        <header className="topbar">
+        <header className="topbar no-print">
           <div>
             <p className="eyebrow">Venue CRM, BEO, booking, and operations</p>
             <h1>{moduleTitle(activeModule)}</h1>
@@ -1247,14 +1895,16 @@ function App() {
               <Bell size={18} />
               {notificationItems.length > 0 && <span>{notificationItems.length}</span>}
             </button>
-            <a
-              className="primary-action"
-              href="#NewBooking"
-              onClick={() => setActiveModule('NewBooking')}
-            >
-              <Plus size={17} />
-              New booking
-            </a>
+            {hasPermission(loginSession.role, 'booking:create') && (
+              <a
+                className="primary-action"
+                href="#NewBooking"
+                onClick={() => setActiveModule('NewBooking')}
+              >
+                <Plus size={17} />
+                New booking
+              </a>
+            )}
           </div>
           {notificationsOpen && (
             <section className="notification-panel" aria-label="Local notifications">
@@ -1299,6 +1949,7 @@ function App() {
             <NewBookingView
               bookings={bookings}
               createBooking={createBooking}
+              products={products}
               recordSandboxAction={recordSandboxAction}
               setActiveModule={setActiveModule}
             />
@@ -1309,6 +1960,7 @@ function App() {
               bookings={bookings}
               confirmedRevenue={confirmedRevenue}
               forecastRevenue={forecastRevenue}
+              leads={leads}
               overdueFollowUps={overdueFollowUps}
               pipelineRevenue={pipelineRevenue}
               setActiveModule={setActiveModule}
@@ -1326,13 +1978,20 @@ function App() {
             />
           )}
 
-          {(activeModule === 'Leads' || activeModule === 'CRM') && (
-            <CrmView activeModule={activeModule} bookings={bookings} />
+          {activeModule === 'Leads' && (
+            <LeadsView account={loginSession} leads={leads} setLeads={setLeads} />
           )}
+
+          {activeModule === 'CRM' && <CrmView bookings={bookings} />}
 
           {activeModule === 'Bookings' && (
             <BookingsView
+              account={loginSession}
               bookings={filteredBookings}
+              onViewBeo={(bookingId) => {
+                setActiveModule('BEOs')
+                setBeoViewBookingId(bookingId)
+              }}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
               setStatusFilter={setStatusFilter}
@@ -1341,27 +2000,81 @@ function App() {
             />
           )}
 
-          {activeModule === 'BEOs' && selectedBooking && (
-            <BeoView
-              booking={selectedBooking}
-              bookings={filteredBookings}
-              markBeoRevised={markBeoRevised}
-              recordSandboxAction={recordSandboxAction}
-              setSelectedBookingId={setSelectedBookingId}
-            />
-          )}
-
-          {(activeModule === 'Proposals' || activeModule === 'Invoices') &&
-            selectedBooking && (
-              <DocumentsView
-                booking={selectedBooking}
-                documentType={activeModule}
-                recordSandboxAction={recordSandboxAction}
-                setActiveModule={setActiveModule}
+          {activeModule === 'BEOs' &&
+            (beoViewBooking ? (
+              <BeoView
+                appendBeoHistory={appendBeoHistory}
+                booking={beoViewBooking}
+                markBeoRevised={markBeoRevised}
+                markClientApproved={markClientApproved}
+                onBack={() => setBeoViewBookingId(null)}
+                propertyProfile={propertyProfile}
               />
-            )}
+            ) : (
+              <BeoListView
+                bookings={bookings}
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setBeoViewBookingId(id)
+                }}
+              />
+            ))}
 
-          {activeModule === 'Packages' && <ProductsView />}
+          {activeModule === 'Proposals' &&
+            (proposalViewBooking ? (
+              <DocumentsView
+                account={loginSession}
+                appendDocumentHistory={appendDocumentHistory}
+                booking={proposalViewBooking}
+                documentType="Proposals"
+                onBack={() => setProposalViewBookingId(null)}
+                onOpenBeo={() => {
+                  setActiveModule('BEOs')
+                  setBeoViewBookingId(proposalViewBooking.id)
+                }}
+                propertyProfile={propertyProfile}
+                updateBookingLineItems={updateBookingLineItems}
+              />
+            ) : (
+              <DocumentsListView
+                bookings={bookings}
+                documentType="Proposals"
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setProposalViewBookingId(id)
+                }}
+              />
+            ))}
+
+          {activeModule === 'Invoices' &&
+            (invoiceViewBooking ? (
+              <DocumentsView
+                account={loginSession}
+                appendDocumentHistory={appendDocumentHistory}
+                booking={invoiceViewBooking}
+                documentType="Invoices"
+                onBack={() => setInvoiceViewBookingId(null)}
+                onOpenBeo={() => {
+                  setActiveModule('BEOs')
+                  setBeoViewBookingId(invoiceViewBooking.id)
+                }}
+                propertyProfile={propertyProfile}
+                updateBookingLineItems={updateBookingLineItems}
+              />
+            ) : (
+              <DocumentsListView
+                bookings={bookings}
+                documentType="Invoices"
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setInvoiceViewBookingId(id)
+                }}
+              />
+            ))}
+
+          {activeModule === 'Packages' && (
+            <ProductsView account={loginSession} products={products} setProducts={setProducts} />
+          )}
 
           {activeModule === 'Venues' && <VenuesView bookings={bookings} />}
 
@@ -1372,8 +2085,9 @@ function App() {
               bookings={bookings}
               confirmedRevenue={confirmedRevenue}
               forecastRevenue={forecastRevenue}
+              leads={leads}
               pipelineRevenue={pipelineRevenue}
-              recordSandboxAction={recordSandboxAction}
+              products={products}
             />
           )}
 
@@ -1389,7 +2103,7 @@ function App() {
             />
           )}
         </main>
-        {toast && <div className="toast" role="status">{toast}</div>}
+        {toast && <div className="toast no-print" role="status">{toast}</div>}
       </div>
     </div>
   )
@@ -1461,19 +2175,16 @@ const LOGIN_COPY: Record<
   },
 }
 
+/** Customer sign-in. The vendor console has its own ConsoleLoginView. */
 function LoginView({
-  adminCredentialSettings,
   onSubmit,
-  isAdminRoute,
 }: {
-  adminCredentialSettings: AdminCredentialSettings
   onSubmit: (
     role: AuthRole,
     identifier: string,
     password: string,
     workspaceCode: string,
   ) => Promise<string | null>
-  isAdminRoute: boolean
 }) {
   const [role, setRole] = useState<AuthRole>('top_management')
   const [email, setEmail] = useState('')
@@ -1485,9 +2196,7 @@ function LoginView({
   const [lang, setLang] = useState<LoginLang>('en')
   const t = LOGIN_COPY[lang]
   const isStaff = role === 'staff'
-  const minPasswordLength = isAdminRoute
-    ? adminCredentialSettings.minimumPasswordLength
-    : 8
+  const minPasswordLength = 8
   const passwordReady = password.length >= minPasswordLength
   const identifierReady = isStaff
     ? username.trim() && workspaceCode.trim()
@@ -1570,22 +2279,20 @@ function LoginView({
           <p>{t.subtitle}</p>
         </div>
 
-        {!isAdminRoute && (
-          <div className="login-role-tabs" role="tablist" aria-label={t.roleGroupLabel}>
-            {AUTH_ROLES.map((r) => (
-              <button
-                aria-selected={role === r}
-                className={role === r ? 'is-active' : ''}
-                key={r}
-                onClick={() => selectRole(r)}
-                role="tab"
-                type="button"
-              >
-                {ROLE_LABELS[r][lang]}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="login-role-tabs" role="tablist" aria-label={t.roleGroupLabel}>
+          {AUTH_ROLES.map((r) => (
+            <button
+              aria-selected={role === r}
+              className={role === r ? 'is-active' : ''}
+              key={r}
+              onClick={() => selectRole(r)}
+              role="tab"
+              type="button"
+            >
+              {ROLE_LABELS[r][lang]}
+            </button>
+          ))}
+        </div>
 
         <form className="login-form" onSubmit={submitLogin}>
           {isStaff ? (
@@ -1626,11 +2333,7 @@ function LoginView({
               autoComplete="current-password"
               onChange={(event) => setPassword(event.target.value)}
               placeholder={
-                isStaff
-                  ? t.staffPasswordPlaceholder
-                  : isAdminRoute
-                    ? t.adminPasswordPlaceholder
-                    : t.clientPasswordPlaceholder
+                isStaff ? t.staffPasswordPlaceholder : t.clientPasswordPlaceholder
               }
               required
               type="password"
@@ -1650,10 +2353,102 @@ function LoginView({
   )
 }
 
+/**
+ * Vendor console sign-in. Username + password against eventpilot_console_admins
+ * — deliberately not an email/password Supabase login, so this screen shares no
+ * credentials or session with the customer app.
+ */
+function ConsoleLoginView({
+  onSubmit,
+}: {
+  onSubmit: (username: string, password: string) => Promise<string | null>
+}) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const ready = username.trim().length > 0 && password.length > 0 && !submitting
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    setSubmitting(true)
+    const failure = await onSubmit(username, password)
+    setSubmitting(false)
+    if (failure) setError(failure)
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="login-brand-stage">
+        <div className="login-logo-card">
+          <img
+            alt="EventPilot - YOUR BEO NAVIGATOR"
+            src="/brand/eventpilot-command-mark-final.svg"
+          />
+        </div>
+        <p className="login-promo">
+          NNR-Solutions staff only. Client sign-in is at{' '}
+          <a href="/#Dashboard">the client app</a>.
+        </p>
+      </section>
+
+      <section className="login-panel">
+        <div>
+          <p className="eyebrow">EventPilot operator access</p>
+          <h1>Vendor console</h1>
+          <p>
+            Sign in with your console credentials to manage client companies,
+            plans, and operator accounts.
+          </p>
+        </div>
+
+        {!isSupabaseEnabled && (
+          <p className="admin-notice">
+            Offline sandbox — Supabase is not configured, so any credentials are
+            accepted and nothing is saved to a backend.
+          </p>
+        )}
+
+        <form className="login-form" onSubmit={submit}>
+          <FormField label="Console username" requiredLabel="Required" required>
+            <input
+              autoCapitalize="none"
+              autoComplete="username"
+              onChange={(event) => setUsername(event.target.value)}
+              required
+              value={username}
+            />
+          </FormField>
+          <FormField label="Console password" requiredLabel="Required" required>
+            <input
+              autoComplete="current-password"
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              type="password"
+              value={password}
+            />
+          </FormField>
+
+          {error && <p className="login-error">{error}</p>}
+
+          <button className="primary-action login-submit" disabled={!ready} type="submit">
+            <ShieldCheck size={17} />
+            Enter console
+          </button>
+        </form>
+      </section>
+    </main>
+  )
+}
+
 function AdminPortal({
   adminCredentialSettings,
   adminPlans,
   clientCompanies,
+  clientsError,
+  clientsReady,
+  consoleSession,
   expansionPacks,
   handleLogout,
   setAdminCredentialSettings,
@@ -1664,6 +2459,9 @@ function AdminPortal({
   adminCredentialSettings: AdminCredentialSettings
   adminPlans: SaaSPlan[]
   clientCompanies: ClientCompany[]
+  clientsError: string
+  clientsReady: boolean
+  consoleSession: ConsoleSession
   expansionPacks: ExpansionPack[]
   handleLogout: () => void
   setAdminCredentialSettings: (
@@ -1692,6 +2490,10 @@ function AdminPortal({
           </div>
         </div>
         <div className="topbar-actions">
+          <span className="admin-portal-operator">
+            {consoleSession.name}
+            {consoleSession.sandbox ? ' · sandbox' : ''}
+          </span>
           <a className="secondary-action" href="/#Dashboard">
             Open client app
           </a>
@@ -1705,6 +2507,8 @@ function AdminPortal({
           adminCredentialSettings={adminCredentialSettings}
           adminPlans={adminPlans}
           clientCompanies={clientCompanies}
+          clientsError={clientsError}
+          clientsReady={clientsReady}
           expansionPacks={expansionPacks}
           setAdminCredentialSettings={setAdminCredentialSettings}
           setAdminPlans={setAdminPlans}
@@ -1719,11 +2523,13 @@ function AdminPortal({
 function NewBookingView({
   bookings,
   createBooking,
+  products,
   recordSandboxAction,
   setActiveModule,
 }: {
   bookings: EventBooking[]
   createBooking: (booking: EventBooking) => void
+  products: Product[]
   recordSandboxAction: (title: string, detail: string) => void
   setActiveModule: (module: ModuleId) => void
 }) {
@@ -1817,11 +2623,27 @@ function NewBookingView({
       leadSource: form.leadSource.trim(),
       layout: form.layout.trim(),
       packageName: form.packageName.trim(),
-      menu: splitList(form.menu),
+      // Each food/operations field maps onto one of the BEO's existing tag-list
+      // sections; the category prefix keeps that mapping visible on the
+      // printed document instead of collapsing into one undifferentiated list.
+      menu: [
+        ...splitList(form.appetizer).map((item) => `Appetizer: ${item}`),
+        ...splitList(form.soup).map((item) => `Soup: ${item}`),
+        ...splitList(form.mainCourse).map((item) => `Main course: ${item}`),
+        ...splitList(form.dessert).map((item) => `Dessert: ${item}`),
+        ...splitList(form.beverage).map((item) => `Beverage: ${item}`),
+        ...splitList(form.dietaryNotes).map((item) => `Dietary/allergy: ${item}`),
+      ],
       av: splitList(form.av),
       staffing: splitList(form.staffing),
       vendors: splitList(form.vendors),
-      specialRequests: splitList(form.specialRequests),
+      specialRequests: [
+        ...splitList(form.housekeeping).map((item) => `Housekeeping/decoration: ${item}`),
+        ...splitList(form.frontOffice).map((item) => `Front office: ${item}`),
+        ...splitList(form.specialRequests),
+      ],
+      billingCompany: form.billingCompany.trim(),
+      paymentMethod: form.paymentMethod.trim(),
       internalNotes: form.internalNotes.trim(),
       clientNotes: form.clientNotes.trim(),
       beoNumber: `BEO-DRAFT-${id.replace('BKG-', '')}`,
@@ -1947,7 +2769,7 @@ function NewBookingView({
                   value={form.setupTime}
                 />
               </FormField>
-              <FormField label="Breakdown time">
+              <FormField label="Teardown time">
                 <input
                   onChange={(event) => updateField('breakdownTime', event.target.value)}
                   type="time"
@@ -2071,27 +2893,93 @@ function NewBookingView({
           </fieldset>
 
           <fieldset className="panel form-section">
-            <legend>BEO and operations notes</legend>
+            <legend>Food &amp; beverage</legend>
+            <p className="panel-header-detail">
+              One field per course — each becomes a labeled item in the BEO's Food and
+              beverage list, so the kitchen sees which course it belongs to.
+            </p>
             <div className="form-grid form-grid-textareas">
-              <FormField label="Menu / F&B items">
+              <FormField label="Appetizer">
                 <textarea
-                  onChange={(event) => updateField('menu', event.target.value)}
+                  onChange={(event) => updateField('appetizer', event.target.value)}
                   placeholder="Separate items with commas or new lines"
-                  value={form.menu}
+                  value={form.appetizer}
                 />
               </FormField>
-              <FormField label="AV / technical">
+              <FormField label="Soup">
+                <textarea
+                  onChange={(event) => updateField('soup', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.soup}
+                />
+              </FormField>
+              <FormField label="Main course">
+                <textarea
+                  onChange={(event) => updateField('mainCourse', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.mainCourse}
+                />
+              </FormField>
+              <FormField label="Dessert">
+                <textarea
+                  onChange={(event) => updateField('dessert', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.dessert}
+                />
+              </FormField>
+              <FormField label="Beverage">
+                <textarea
+                  onChange={(event) => updateField('beverage', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.beverage}
+                />
+              </FormField>
+              <FormField
+                hint="Also merged into the Food and beverage list, tagged so the kitchen can flag it."
+                label="Food allergy / dietary notes"
+              >
+                <textarea
+                  onChange={(event) => updateField('dietaryNotes', event.target.value)}
+                  placeholder="No pork, nut allergy at table 4, vegetarian x12..."
+                  value={form.dietaryNotes}
+                />
+              </FormField>
+            </div>
+          </fieldset>
+
+          <fieldset className="panel form-section">
+            <legend>Operations &amp; departments</legend>
+            <p className="panel-header-detail">
+              One field per department. Housekeeping/decoration and Front office feed the
+              BEO's Special instructions list; the rest feed their own named section.
+            </p>
+            <div className="form-grid form-grid-textareas">
+              <FormField label="Housekeeping / decoration">
+                <textarea
+                  onChange={(event) => updateField('housekeeping', event.target.value)}
+                  placeholder="Fresh floral centerpieces, linen color, staging..."
+                  value={form.housekeeping}
+                />
+              </FormField>
+              <FormField label="Audio visual / engineer">
                 <textarea
                   onChange={(event) => updateField('av', event.target.value)}
                   placeholder="Microphones, screen, lighting, technician..."
                   value={form.av}
                 />
               </FormField>
-              <FormField label="Staffing">
+              <FormField hint="Banquet captain, servers, FB/BQ execution notes." label="Staffing / FB-BQ">
                 <textarea
                   onChange={(event) => updateField('staffing', event.target.value)}
                   placeholder="Banquet captain, servers, AV tech..."
                   value={form.staffing}
+                />
+              </FormField>
+              <FormField label="Front office">
+                <textarea
+                  onChange={(event) => updateField('frontOffice', event.target.value)}
+                  placeholder="VIP check-in, registration desk, guest list handling..."
+                  value={form.frontOffice}
                 />
               </FormField>
               <FormField label="External vendors">
@@ -2101,10 +2989,36 @@ function NewBookingView({
                   value={form.vendors}
                 />
               </FormField>
+            </div>
+          </fieldset>
+
+          <fieldset className="panel form-section">
+            <legend>Billing instructions</legend>
+            <div className="form-grid">
+              <FormField hint="e.g. Master Account, direct bill to client, third-party sponsor." label="Billing to company">
+                <input
+                  onChange={(event) => updateField('billingCompany', event.target.value)}
+                  placeholder="Master Account"
+                  value={form.billingCompany}
+                />
+              </FormField>
+              <FormField hint="e.g. credit card on file, bank transfer, cash on departure." label="Payment method">
+                <input
+                  onChange={(event) => updateField('paymentMethod', event.target.value)}
+                  placeholder="Bank transfer"
+                  value={form.paymentMethod}
+                />
+              </FormField>
+            </div>
+          </fieldset>
+
+          <fieldset className="panel form-section">
+            <legend>Special instructions &amp; notes</legend>
+            <div className="form-grid form-grid-textareas">
               <FormField label="Special client instructions">
                 <textarea
                   onChange={(event) => updateField('specialRequests', event.target.value)}
-                  placeholder="Dietary needs, VIP handling, access notes..."
+                  placeholder="VIP handling, access notes..."
                   value={form.specialRequests}
                 />
               </FormField>
@@ -2178,11 +3092,13 @@ function NewBookingView({
 
 function FormField({
   children,
+  hint,
   label,
   required,
   requiredLabel = 'Required',
 }: {
   children: React.ReactNode
+  hint?: string
   label: string
   required?: boolean
   requiredLabel?: string
@@ -2194,6 +3110,7 @@ function FormField({
         {required && <em>{requiredLabel}</em>}
       </span>
       {children}
+      {hint && <small className="form-field-hint">{hint}</small>}
     </label>
   )
 }
@@ -2202,6 +3119,7 @@ function DashboardView({
   bookings,
   confirmedRevenue,
   forecastRevenue,
+  leads,
   overdueFollowUps,
   pipelineRevenue,
   setActiveModule,
@@ -2210,6 +3128,7 @@ function DashboardView({
   bookings: EventBooking[]
   confirmedRevenue: number
   forecastRevenue: number
+  leads: Lead[]
   overdueFollowUps: number
   pipelineRevenue: number
   setActiveModule: (module: ModuleId) => void
@@ -2234,6 +3153,37 @@ function DashboardView({
   const unpaidInvoices = bookings.filter((booking) =>
     ['Unpaid', 'Deposit due', 'Partial'].includes(booking.paymentStatus),
   )
+  const openLeads = leads.filter((lead) => lead.stage !== 'Won' && lead.stage !== 'Lost')
+
+  const weekAheadKey = toDateKey(
+    new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 7),
+  )
+  const nearTermBookings = bookings.filter(
+    (booking) =>
+      booking.date >= todayKey &&
+      booking.date <= weekAheadKey &&
+      booking.status !== 'Lost' &&
+      booking.status !== 'Cancelled',
+  )
+  const kitchenItems = nearTermBookings
+    .filter((booking) => booking.menu.length === 0 || booking.guaranteedGuests === 0)
+    .map((booking) => `Final count/menu needed for ${booking.eventName} (${booking.beoNumber})`)
+    .slice(0, 4)
+  const banquetOpsItems = nearTermBookings
+    .filter((booking) => booking.av.length === 0 || !booking.layout || !booking.setupTime)
+    .map((booking) => `Setup/AV pending for ${booking.eventName} (${booking.room})`)
+    .slice(0, 4)
+  const financeItems = nearTermBookings
+    .filter(
+      (booking) =>
+        booking.depositDue > 0 &&
+        (booking.paymentStatus === 'Unpaid' || booking.paymentStatus === 'Deposit due'),
+    )
+    .map(
+      (booking) =>
+        `${booking.paymentStatus}: ${booking.eventName} (${money(booking.depositDue)})`,
+    )
+    .slice(0, 4)
 
   return (
     <div className="page-stack">
@@ -2306,16 +3256,16 @@ function DashboardView({
           <div className="forecast-card">
             <CircleDollarSign size={28} />
             <strong>{money(pipelineRevenue)}</strong>
-            <span>Open opportunity value</span>
+            <span>Open lead value</span>
           </div>
           <div className="stage-list">
-            {opportunities.map((opportunity) => (
-              <div className="stage-item" key={opportunity.id}>
+            {openLeads.map((lead) => (
+              <div className="stage-item" key={lead.id}>
                 <div>
-                  <strong>{opportunity.title}</strong>
-                  <span>{opportunity.stage}</span>
+                  <strong>{lead.name}</strong>
+                  <span>{lead.stage}</span>
                 </div>
-                <em>{opportunity.probability}%</em>
+                <em>{LEAD_STAGE_PROBABILITY[lead.stage]}%</em>
               </div>
             ))}
           </div>
@@ -2325,17 +3275,17 @@ function DashboardView({
       <section className="triple-grid">
         <OperationalPanel
           icon={Utensils}
-          items={['Final count for BKG-2401', 'Vegetarian labels for symposium']}
+          items={kitchenItems.length ? kitchenItems : ['No kitchen items due this week']}
           title="Kitchen"
         />
         <OperationalPanel
           icon={Building2}
-          items={['Stage power check', 'Garden rain backup decision']}
+          items={banquetOpsItems.length ? banquetOpsItems : ['No setup/AV items due this week']}
           title="Banquet operations"
         />
         <OperationalPanel
           icon={ReceiptText}
-          items={['Deposit reminders', 'Partial payment follow-up']}
+          items={financeItems.length ? financeItems : ['No outstanding deposits this week']}
           title="Finance"
         />
       </section>
@@ -2363,7 +3313,7 @@ function CalendarView({
   )
   const monthStart = monthKeyToDate(visibleMonth)
   const calendarStart = new Date(monthStart)
-  calendarStart.setDate(monthStart.getDate() - monthStart.getDay())
+  calendarStart.setDate(monthStart.getDate() - ((monthStart.getDay() + 6) % 7))
 
   const todayKey = toDateKey(new Date())
   const visibleMonthNumber = monthStart.getMonth()
@@ -2371,7 +3321,7 @@ function CalendarView({
     month: 'long',
     year: 'numeric',
   }).format(monthStart)
-  const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
   const calendarDays = Array.from({ length: 42 }, (_, index) => {
     const date = new Date(calendarStart)
     date.setDate(calendarStart.getDate() + index)
@@ -2497,87 +3447,369 @@ function CalendarView({
   )
 }
 
-function CrmView({
-  activeModule,
-  bookings,
+function emptyLead(): Lead {
+  return {
+    id: `LEAD-${Date.now()}`,
+    name: 'New lead',
+    company: '',
+    email: '',
+    phone: '',
+    source: '',
+    category: '',
+    stage: 'New',
+    estimatedValue: 0,
+    owner: '',
+    createdAt: toDateKey(new Date()),
+    notes: '',
+    history: [{ id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note: 'Lead created' }],
+  }
+}
+
+function LeadDetailView({
+  canDelete,
+  canEdit,
+  lead,
+  onBack,
+  onDelete,
+  updateLead,
 }: {
-  activeModule: ModuleId
-  bookings: EventBooking[]
+  canDelete: boolean
+  canEdit: boolean
+  lead: Lead
+  onBack: () => void
+  onDelete: (id: string) => void
+  updateLead: <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => void
 }) {
-  if (activeModule === 'CRM') {
-    return <CustomerDirectory bookings={bookings} />
+  const [isEditing, setIsEditing] = useState(false)
+  const orderedHistory = [...(lead.history ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to leads
+      </button>
+
+      <section className="panel">
+        <div className="drawer-head">
+          <div>
+            <p className="eyebrow">{lead.stage}</p>
+            <h2>
+              {lead.name}
+              {lead.company ? ` · ${lead.company}` : ''}
+            </h2>
+          </div>
+          {(canEdit || canDelete) && (
+            <div className="card-actions">
+              {canEdit && (
+                <button
+                  className={isEditing ? 'secondary-action' : 'primary-action'}
+                  onClick={() => setIsEditing((current) => !current)}
+                  type="button"
+                >
+                  {isEditing ? 'Done' : 'Edit'}
+                </button>
+              )}
+              {canDelete && (
+                <button className="secondary-action" onClick={() => onDelete(lead.id)} type="button">
+                  Delete
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {isEditing ? (
+          <div className="plan-edit-form">
+            <FormField label="Contact name">
+              <input
+                onChange={(event) => updateLead(lead.id, 'name', event.target.value)}
+                value={lead.name}
+              />
+            </FormField>
+            <FormField label="Company">
+              <input
+                onChange={(event) => updateLead(lead.id, 'company', event.target.value)}
+                value={lead.company}
+              />
+            </FormField>
+            <FormField label="Email">
+              <input
+                onChange={(event) => updateLead(lead.id, 'email', event.target.value)}
+                value={lead.email}
+              />
+            </FormField>
+            <FormField label="Phone">
+              <input
+                onChange={(event) => updateLead(lead.id, 'phone', event.target.value)}
+                value={lead.phone}
+              />
+            </FormField>
+            <FormField label="Source">
+              <input
+                onChange={(event) => updateLead(lead.id, 'source', event.target.value)}
+                value={lead.source}
+              />
+            </FormField>
+            <FormField label="Category">
+              <input
+                onChange={(event) => updateLead(lead.id, 'category', event.target.value)}
+                value={lead.category}
+              />
+            </FormField>
+            <FormField label="Stage">
+              <select
+                onChange={(event) => updateLead(lead.id, 'stage', event.target.value as LeadStage)}
+                value={lead.stage}
+              >
+                {LEAD_STAGES.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {stage}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            {lead.stage === 'Lost' && (
+              <FormField label="Lost reason">
+                <input
+                  onChange={(event) => updateLead(lead.id, 'lostReason', event.target.value)}
+                  value={lead.lostReason ?? ''}
+                />
+              </FormField>
+            )}
+            <FormField label="Estimated value">
+              <input
+                min="0"
+                onChange={(event) =>
+                  updateLead(lead.id, 'estimatedValue', Number(event.target.value))
+                }
+                type="number"
+                value={lead.estimatedValue}
+              />
+            </FormField>
+            <FormField label="Owner">
+              <input
+                onChange={(event) => updateLead(lead.id, 'owner', event.target.value)}
+                value={lead.owner}
+              />
+            </FormField>
+            <FormField label="Notes">
+              <textarea
+                onChange={(event) => updateLead(lead.id, 'notes', event.target.value)}
+                value={lead.notes}
+              />
+            </FormField>
+          </div>
+        ) : (
+          <>
+            <div className="detail-grid">
+              <Detail label="Email" value={lead.email || 'Not set'} />
+              <Detail label="Phone" value={lead.phone || 'Not set'} />
+              <Detail label="Source" value={lead.source || 'Not set'} />
+              <Detail label="Category" value={lead.category || 'Not set'} />
+              <Detail label="Estimated value" value={money(lead.estimatedValue)} />
+              <Detail label="Owner" value={lead.owner || 'Unassigned'} />
+              {lead.stage === 'Lost' && (
+                <Detail label="Lost reason" value={lead.lostReason || 'Not recorded'} />
+              )}
+              <Detail label="Created" value={lead.createdAt} />
+            </div>
+            <div className="drawer-section">
+              <h3>Notes</h3>
+              <p>{lead.notes || 'No notes yet.'}</p>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="panel">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {orderedHistory.map((entry) => (
+            <div className="timeline-entry" key={entry.id}>
+              <span className="timeline-dot" />
+              <div>
+                <strong>{entry.note}</strong>
+                <span>{entry.timestamp}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function LeadsView({
+  account,
+  leads,
+  setLeads,
+}: {
+  account: LoginSession
+  leads: Lead[]
+  setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
+}) {
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+  const canCreate = hasPermission(account.role, 'leads:create')
+  const canEdit = hasPermission(account.role, 'leads:edit')
+  const canDelete = hasPermission(account.role, 'leads:delete')
+  const getLeadDate = (lead: Lead) => lead.createdAt
+  const availableMonths = availableMonthsOf(leads, getLeadDate)
+  const availableYears = availableYearsOf(leads, getLeadDate)
+  const [viewMode, setViewMode] = useState<ListViewMode>('grid')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
+  const [selectedMonth, setSelectedMonth] = useState(
+    () => availableMonths[availableMonths.length - 1] ?? '',
+  )
+  const [selectedYear, setSelectedYear] = useState(
+    () => availableYears[availableYears.length - 1] ?? '',
+  )
+  const visibleLeads = filterAndSortByTime(
+    leads,
+    getLeadDate,
+    timeFilter,
+    selectedMonth,
+    selectedYear,
+  )
+
+  const updateLead = <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => {
+    setLeads((current) =>
+      current.map((lead) => {
+        if (lead.id !== id) return lead
+        const next = { ...lead, [field]: value }
+        if (field === 'stage' && lead.stage !== value) {
+          next.history = [
+            ...(lead.history ?? []),
+            {
+              id: `HIST-${Date.now()}`,
+              timestamp: toDateKey(new Date()),
+              note: `Stage changed from ${lead.stage} to ${value as LeadStage}`,
+            },
+          ]
+        }
+        return next
+      }),
+    )
+  }
+
+  const createLead = () => {
+    const lead = emptyLead()
+    setLeads((current) => [lead, ...current])
+    setSelectedLeadId(lead.id)
+  }
+
+  const deleteLead = (id: string) => {
+    if (!window.confirm('Delete this lead? This cannot be undone.')) return
+    setLeads((current) => current.filter((lead) => lead.id !== id))
+    if (selectedLeadId === id) setSelectedLeadId(null)
+  }
+
+  const selectedLead = leads.find((lead) => lead.id === selectedLeadId)
+
+  if (selectedLead) {
+    return (
+      <LeadDetailView
+        canDelete={canDelete}
+        canEdit={canEdit}
+        lead={selectedLead}
+        onBack={() => setSelectedLeadId(null)}
+        onDelete={deleteLead}
+        updateLead={updateLead}
+      />
+    )
   }
 
   return (
     <div className="page-stack">
-      <section className="pipeline-board">
-        {opportunities.map((opportunity) => (
-          <article className="opportunity-card" key={opportunity.id}>
-            <span>{opportunity.stage}</span>
-            <strong>{opportunity.title}</strong>
-            <p>{opportunity.account}</p>
-            <div className="progress-track">
-              <span style={{ width: `${opportunity.probability}%` }} />
-            </div>
-            <div className="card-foot">
-              <em>{money(opportunity.expectedRevenue)}</em>
-              <small>{opportunity.expectedClose}</small>
-            </div>
-            <p className="note-line">{opportunity.nextAction}</p>
-          </article>
-        ))}
-      </section>
-
-      <section className="account-grid">
-        {accounts.map((account) => {
-          const accountBookings = bookings.filter(
-            (booking) => booking.account === account.name,
-          )
-          return (
-            <article className="account-card" key={account.id}>
-              <div className="account-head">
-                <div className="avatar">{account.name.slice(0, 2)}</div>
-                <div className="account-title">
-                  <strong>{account.name}</strong>
-                  <span className="account-type">{account.type}</span>
+      <section className="panel">
+        <PanelHeader
+          action={canCreate ? 'New lead' : undefined}
+          onAction={canCreate ? createLead : undefined}
+          title="Leads"
+        />
+        <ListViewControls
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          setSelectedMonth={setSelectedMonth}
+          setSelectedYear={setSelectedYear}
+          setTimeFilter={setTimeFilter}
+          setViewMode={setViewMode}
+          timeFilter={timeFilter}
+          viewMode={viewMode}
+        />
+        {viewMode === 'grid' ? (
+          <div className="pipeline-board">
+            {visibleLeads.map((lead) => (
+              <button
+                className="opportunity-card"
+                key={lead.id}
+                onClick={() => setSelectedLeadId(lead.id)}
+                type="button"
+              >
+                <span>{lead.stage}</span>
+                <strong>
+                  {lead.name}
+                  {lead.company ? ` · ${lead.company}` : ''}
+                </strong>
+                <p>
+                  {[lead.category, lead.source].filter(Boolean).join(' — ') ||
+                    'No category/source set'}
+                </p>
+                <div className="progress-track">
+                  <span style={{ width: `${LEAD_STAGE_PROBABILITY[lead.stage]}%` }} />
                 </div>
-              </div>
-              <div className="account-stats">
-                <span>
-                  <strong title={money(account.totalRevenue)}>
-                    {compactMoney(account.totalRevenue)}
+                <div className="card-foot">
+                  <em>{money(lead.estimatedValue)}</em>
+                  <small>{lead.owner || 'Unassigned'}</small>
+                </div>
+                <p className="note-line">{lead.notes || 'No notes yet.'}</p>
+              </button>
+            ))}
+            {!visibleLeads.length && <p>No leads for this period.</p>}
+          </div>
+        ) : (
+          <div className="banner-list">
+            {visibleLeads.map((lead) => (
+              <button
+                className="banner-row"
+                key={lead.id}
+                onClick={() => setSelectedLeadId(lead.id)}
+                type="button"
+              >
+                <span className="banner-status">{lead.stage}</span>
+                <div className="banner-main">
+                  <strong>
+                    {lead.name}
+                    {lead.company ? ` · ${lead.company}` : ''}
                   </strong>
-                  <small>Past revenue</small>
-                </span>
-                <span>
-                  <strong>{account.events}</strong>
-                  <small>Past events</small>
-                </span>
-                <span>
-                  <strong>{accountBookings.length}</strong>
-                  <small>Active bookings</small>
-                </span>
-              </div>
-              <dl>
-                <div>
-                  <dt>Contact</dt>
-                  <dd>{account.contact}</dd>
+                  <span>
+                    {[lead.category, lead.source].filter(Boolean).join(' — ') ||
+                      'No category/source set'}
+                  </span>
                 </div>
-                <div>
-                  <dt>Preference</dt>
-                  <dd>{account.preferredPackages.join(', ')}</dd>
-                </div>
-                <div>
-                  <dt>Behavior</dt>
-                  <dd>{account.behavior}</dd>
-                </div>
-              </dl>
-            </article>
-          )
-        })}
+                <span className="banner-meta">{lead.owner || 'Unassigned'}</span>
+                <strong className="banner-value">{money(lead.estimatedValue)}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!visibleLeads.length && <p>No leads for this period.</p>}
+          </div>
+        )}
       </section>
     </div>
   )
+}
+
+function CrmView({
+  bookings,
+}: {
+  bookings: EventBooking[]
+}) {
+  return <CustomerDirectory bookings={bookings} />
 }
 
 function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
@@ -2744,14 +3976,18 @@ function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
 }
 
 function BookingsView({
+  account,
   bookings,
+  onViewBeo,
   selectedBookingId,
   setSelectedBookingId,
   setStatusFilter,
   statusFilter,
   updateBookingStatus,
 }: {
+  account: LoginSession
   bookings: EventBooking[]
+  onViewBeo: (bookingId: string) => void
   selectedBookingId?: string
   setSelectedBookingId: (id: string) => void
   setStatusFilter: (status: BookingStatus | 'All') => void
@@ -2761,6 +3997,8 @@ function BookingsView({
     direction: 'backward' | 'forward',
   ) => void
 }) {
+  const canAdvance = hasPermission(account.role, 'booking:advanceStatus')
+  const canFallBack = hasPermission(account.role, 'booking:fallBackStatus')
   const bookingDisplayLimit = 6
   const [showAllBookings, setShowAllBookings] = useState(false)
   const selectedBooking =
@@ -2856,45 +4094,166 @@ function BookingsView({
               ))}
             </ul>
           </div>
-          <div className="status-actions">
+          <div className="card-actions full-width view-beo-action">
             <button
-              className="secondary-action"
-              disabled={isFirstStatus}
-              onClick={() => updateBookingStatus(selectedBooking.id, 'backward')}
+              className="secondary-action full-width"
+              onClick={() => onViewBeo(selectedBooking.id)}
               type="button"
             >
-              <ChevronLeft size={17} />
-              Fall back
-            </button>
-            <button
-              className="primary-action"
-              disabled={isLastStatus}
-              onClick={() => updateBookingStatus(selectedBooking.id, 'forward')}
-              type="button"
-            >
-              <CheckCircle2 size={17} />
-              Advance
+              <ClipboardList size={17} />
+              View BEO
             </button>
           </div>
+          {(canFallBack || canAdvance) && (
+            <div className="status-actions">
+              {canFallBack && (
+                <button
+                  className="secondary-action"
+                  disabled={isFirstStatus}
+                  onClick={() => updateBookingStatus(selectedBooking.id, 'backward')}
+                  type="button"
+                >
+                  <ChevronLeft size={17} />
+                  Fall back
+                </button>
+              )}
+              {canAdvance && (
+                <button
+                  className="primary-action"
+                  disabled={isLastStatus}
+                  onClick={() => updateBookingStatus(selectedBooking.id, 'forward')}
+                  type="button"
+                >
+                  <CheckCircle2 size={17} />
+                  Advance
+                </button>
+              )}
+            </div>
+          )}
         </aside>
       )}
     </div>
   )
 }
 
-function BeoView({
-  booking,
+function BeoListView({
   bookings,
-  markBeoRevised,
-  recordSandboxAction,
-  setSelectedBookingId,
+  onSelect,
 }: {
-  booking: EventBooking
   bookings: EventBooking[]
-  markBeoRevised: (bookingId: string) => void
-  recordSandboxAction: (title: string, detail: string) => void
-  setSelectedBookingId: (id: string) => void
+  onSelect: (bookingId: string) => void
 }) {
+  const getBookingDate = (booking: EventBooking) => booking.date
+  const availableMonths = availableMonthsOf(bookings, getBookingDate)
+  const availableYears = availableYearsOf(bookings, getBookingDate)
+  const [viewMode, setViewMode] = useState<ListViewMode>('grid')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
+  const [selectedMonth, setSelectedMonth] = useState(
+    () => availableMonths[availableMonths.length - 1] ?? '',
+  )
+  const [selectedYear, setSelectedYear] = useState(
+    () => availableYears[availableYears.length - 1] ?? '',
+  )
+  const visibleBookings = filterAndSortByTime(
+    bookings,
+    getBookingDate,
+    timeFilter,
+    selectedMonth,
+    selectedYear,
+  )
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader title="BEOs" />
+        <ListViewControls
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          setSelectedMonth={setSelectedMonth}
+          setSelectedYear={setSelectedYear}
+          setTimeFilter={setTimeFilter}
+          setViewMode={setViewMode}
+          timeFilter={timeFilter}
+          viewMode={viewMode}
+        />
+        {viewMode === 'grid' ? (
+          <div className="resource-grid">
+            {visibleBookings.map((booking) => (
+              <button
+                className="resource-card"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <div className="resource-head">
+                  <span>
+                    {booking.beoNumber} / Rev {booking.revision}
+                  </span>
+                  <strong>{booking.eventName}</strong>
+                </div>
+                <p>
+                  {booking.date} · {booking.venue}, {booking.room}
+                </p>
+                <div className="resource-meta">
+                  <span>{booking.status}</span>
+                  <span>{booking.guaranteedGuests} guaranteed</span>
+                  <span>{money(booking.forecastRevenue)}</span>
+                </div>
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No BEOs for this period.</p>}
+          </div>
+        ) : (
+          <div className="banner-list">
+            {visibleBookings.map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">{booking.status}</span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.beoNumber} / Rev {booking.revision} · {booking.date}
+                  </span>
+                </div>
+                <span className="banner-meta">
+                  {booking.venue}, {booking.room}
+                </span>
+                <strong className="banner-value">{money(booking.forecastRevenue)}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No BEOs for this period.</p>}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function BeoView({
+  appendBeoHistory,
+  booking,
+  markBeoRevised,
+  markClientApproved,
+  onBack,
+  propertyProfile,
+}: {
+  appendBeoHistory: (bookingId: string, note: string) => void
+  booking: EventBooking
+  markBeoRevised: (bookingId: string) => void
+  markClientApproved: (bookingId: string) => void
+  onBack: () => void
+  propertyProfile: PropertyProfile
+}) {
+  const beoHistory = [...(booking.beoHistory ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
   const readinessItems = [
     {
       label: 'Plan and contract',
@@ -2951,108 +4310,16 @@ function BeoView({
   const readinessPercent = Math.round((readyCount / readinessItems.length) * 100)
   const departmentResponsibilities = [
     ['Sales', 'Contract, client notes, revision approval'],
-    ['Banquet operations', 'Room setup, logistics, vendor access, breakdown'],
+    ['Banquet operations', 'Room setup, logistics, vendor access, teardown'],
     ['Kitchen', 'Menu, guaranteed counts, dietary notes, service timing'],
     ['AV', 'Audio, display, microphones, technical support'],
     ['Service', 'Staffing, guest flow, table service, special instructions'],
     ['Finance', 'Deposit, proforma invoice, final billing controls'],
   ]
+  const [showPdfPreview, setShowPdfPreview] = useState(false)
 
-  return (
-    <div className="documents-layout">
-      <aside className="document-list">
-        {bookings.map((item) => (
-          <button
-            className={item.id === booking.id ? 'doc-list-item active' : 'doc-list-item'}
-            key={item.id}
-            onClick={() => setSelectedBookingId(item.id)}
-            aria-pressed={item.id === booking.id}
-            type="button"
-          >
-            <FileText size={16} />
-            <span>{item.beoNumber}</span>
-            <em>Rev {item.revision}</em>
-          </button>
-        ))}
-      </aside>
-
-      <section className="document-preview">
-        <div className="document-toolbar">
-          <div>
-            <p className="eyebrow">Banquet Event Order</p>
-            <h2>{booking.beoNumber}</h2>
-          </div>
-          <div className="toolbar-actions">
-            <button
-              className="secondary-action"
-              onClick={() =>
-                recordSandboxAction(
-                  'BEO share simulated',
-                  `${booking.beoNumber} queued for sales, operations, kitchen, AV, service, and finance.`,
-                )
-              }
-              type="button"
-            >
-              <Send size={16} />
-              Share
-            </button>
-            <button
-              className="secondary-action"
-              onClick={() =>
-                recordSandboxAction(
-                  'PDF export simulated',
-                  `${booking.beoNumber} Rev ${booking.revision} export was logged locally.`,
-                )
-              }
-              type="button"
-            >
-              <Download size={16} />
-              PDF
-            </button>
-            <button
-              className="primary-action"
-              onClick={() => markBeoRevised(booking.id)}
-              type="button"
-            >
-              <RefreshCcw size={16} />
-              Mark revised
-            </button>
-          </div>
-        </div>
-
-        <section className="beo-control-panel">
-          <div className="beo-readiness-head">
-            <div>
-              <p className="eyebrow">Operational readiness</p>
-              <h3>{readyCount}/{readinessItems.length} BEO controls complete</h3>
-            </div>
-            <strong>{readinessPercent}%</strong>
-          </div>
-          <div className="progress-track">
-            <span style={{ width: `${readinessPercent}%` }} />
-          </div>
-          <div className="beo-readiness-grid">
-            {readinessItems.map((item) => (
-              <div className={item.ready ? 'readiness-item ready' : 'readiness-item'} key={item.label}>
-                <CheckCircle2 size={16} />
-                <div>
-                  <strong>{item.label}</strong>
-                  <span>{item.detail}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="department-strip">
-            {departmentResponsibilities.map(([department, responsibility]) => (
-              <div key={department}>
-                <strong>{department}</strong>
-                <span>{responsibility}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <div className="paper">
+  const paperDocument = (
+    <div className="paper print-doc">
           <div className="paper-head">
             <div>
               <span>EventPilot</span>
@@ -3072,7 +4339,7 @@ function BeoView({
             <Detail label="Date" value={booking.date} />
             <Detail label="Time" value={`${booking.startTime}-${booking.endTime}`} />
             <Detail label="Room" value={`${booking.venue}, ${booking.room}`} />
-            <Detail label="Setup" value={`${booking.setupTime} / Breakdown ${booking.breakdownTime}`} />
+            <Detail label="Setup" value={`${booking.setupTime} / Teardown ${booking.breakdownTime}`} />
             <Detail label="Guests" value={`${booking.guaranteedGuests} guaranteed`} />
             <Detail label="Owner" value={booking.owner} />
           </div>
@@ -3086,7 +4353,7 @@ function BeoView({
               <span>{booking.endTime}</span>
               <p>Event close and client farewell</p>
               <span>{booking.breakdownTime}</span>
-              <p>Breakdown and room reset</p>
+              <p>Teardown and room reset</p>
             </div>
           </PaperSection>
 
@@ -3096,6 +4363,8 @@ function BeoView({
               <Detail label="Payment status" value={booking.paymentStatus} />
               <Detail label="Revision" value={`Rev ${booking.revision}`} />
               <Detail label="Distribution" value="Sales, operations, kitchen, AV, finance" />
+              <Detail label="Billed to" value={booking.billingCompany || booking.account} />
+              <Detail label="Payment method" value={booking.paymentMethod || 'Not specified'} />
             </div>
           </PaperSection>
 
@@ -3103,7 +4372,7 @@ function BeoView({
             <div className="paper-grid compact-paper-grid">
               <Detail label="Layout" value={booking.layout} />
               <Detail label="Setup access" value={booking.setupTime} />
-              <Detail label="Breakdown" value={booking.breakdownTime} />
+              <Detail label="Teardown" value={booking.breakdownTime} />
               <Detail label="Guest count" value={`${booking.guaranteedGuests} guaranteed / ${booking.expectedGuests} expected`} />
             </div>
           </PaperSection>
@@ -3140,61 +4409,509 @@ function BeoView({
           </PaperSection>
 
           <div className="signature-row">
-            <span>Client approval</span>
-            <span>Operations approval</span>
-            <span>Finance approval</span>
+            <div className="signatory-column">
+              <strong>{booking.account}</strong>
+              <small>Client approval — {booking.contact}</small>
+              {booking.clientApprovedAt && (
+                <small className="approval-status">
+                  ✓ Approved {booking.clientApprovedAt}
+                </small>
+              )}
+            </div>
+            <div className="signatory-column">
+              <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
+              <small>
+                Operations approval — {propertyProfile.signatoryTitle || 'Operations'}
+              </small>
+            </div>
+            <div className="signatory-column">
+              <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
+              <small>Finance approval — {propertyProfile.signatoryTitle || 'Finance'}</small>
+            </div>
           </div>
+          {!booking.clientApprovedAt && (
+            <div className="card-actions no-print">
+              <button
+                className="secondary-action"
+                onClick={() => markClientApproved(booking.id)}
+                type="button"
+              >
+                <CheckCircle2 size={16} />
+                Mark client approved
+              </button>
+            </div>
+          )}
+    </div>
+  )
+
+  if (showPdfPreview) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={() => setShowPdfPreview(false)}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back
+        </button>
+
+        <section className="document-preview single-document">
+          <div className="document-toolbar no-print">
+            <div>
+              <p className="eyebrow">Banquet Event Order</p>
+              <h2>{booking.beoNumber}</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button
+                className="secondary-action"
+                onClick={() =>
+                  shareDocument(
+                    {
+                      title: booking.beoNumber,
+                      text: `${booking.beoNumber} Rev ${booking.revision} — ${booking.eventName}, ${booking.date} at ${booking.venue}.`,
+                    },
+                    () => appendBeoHistory(booking.id, 'Summary copied to clipboard'),
+                  )
+                }
+                type="button"
+              >
+                <Send size={16} />
+                Share
+              </button>
+              <button
+                className="primary-action"
+                onClick={() => {
+                  appendBeoHistory(booking.id, 'Printed / exported as PDF')
+                  window.print()
+                }}
+                type="button"
+              >
+                <Download size={16} />
+                Print
+              </button>
+            </div>
+          </div>
+          {paperDocument}
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to BEOs
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">Banquet Event Order</p>
+            <h2>{booking.beoNumber}</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button
+              className="secondary-action"
+              onClick={() =>
+                shareDocument(
+                  {
+                    title: booking.beoNumber,
+                    text: `${booking.beoNumber} Rev ${booking.revision} — ${booking.eventName}, ${booking.date} at ${booking.venue}.`,
+                  },
+                  () => appendBeoHistory(booking.id, 'Summary copied to clipboard'),
+                )
+              }
+              type="button"
+            >
+              <Send size={16} />
+              Share
+            </button>
+            <button
+              className="secondary-action"
+              onClick={() => setShowPdfPreview(true)}
+              type="button"
+            >
+              <Download size={16} />
+              View PDF
+            </button>
+            <button
+              className="primary-action"
+              onClick={() => markBeoRevised(booking.id)}
+              type="button"
+            >
+              <RefreshCcw size={16} />
+              Mark revised
+            </button>
+          </div>
+        </div>
+
+        <section className="beo-control-panel no-print">
+          <div className="beo-readiness-head">
+            <div>
+              <p className="eyebrow">Operational readiness</p>
+              <h3>{readyCount}/{readinessItems.length} BEO controls complete</h3>
+            </div>
+            <strong>{readinessPercent}%</strong>
+          </div>
+          <div className="progress-track">
+            <span style={{ width: `${readinessPercent}%` }} />
+          </div>
+          <div className="beo-readiness-grid">
+            {readinessItems.map((item) => (
+              <div className={item.ready ? 'readiness-item ready' : 'readiness-item'} key={item.label}>
+                <CheckCircle2 size={16} />
+                <div>
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {paperDocument}
+      </section>
+
+      <section className="panel no-print">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {beoHistory.length ? (
+            beoHistory.map((entry) => (
+              <div className="timeline-entry" key={entry.id}>
+                <span className="timeline-dot" />
+                <div>
+                  <strong>{entry.note}</strong>
+                  <span>{entry.timestamp}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p>No history recorded yet.</p>
+          )}
         </div>
       </section>
     </div>
   )
 }
 
-function DocumentsView({
-  booking,
-  documentType,
-  recordSandboxAction,
-  setActiveModule,
+function LineItemsEditor({
+  editable,
+  lineItems,
+  onChange,
 }: {
-  booking: EventBooking
-  documentType: 'Proposals' | 'Invoices'
-  recordSandboxAction: (title: string, detail: string) => void
-  setActiveModule: (module: ModuleId) => void
+  editable: boolean
+  lineItems: LineItem[]
+  onChange: (next: LineItem[]) => void
 }) {
-  const subtotal = booking.forecastRevenue
-  const serviceCharge = subtotal * 0.1
-  const tax = (subtotal + serviceCharge) * 0.07
-  const total = subtotal + serviceCharge + tax
+  const updateItem = <K extends keyof LineItem>(id: string, field: K, value: LineItem[K]) => {
+    onChange(lineItems.map((item) => (item.id === id ? { ...item, [field]: value } : item)))
+  }
+  const addItem = () => {
+    onChange([
+      ...lineItems,
+      { id: `LI-${Date.now()}`, description: '', quantity: 1, unitPrice: 0 },
+    ])
+  }
+  const removeItem = (id: string) => {
+    onChange(lineItems.filter((item) => item.id !== id))
+  }
 
   return (
-    <section className="document-preview single-document">
-      <div className="document-toolbar">
-        <div>
-          <p className="eyebrow">{documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}</p>
-          <h2>{booking.eventName}</h2>
-        </div>
-        <div className="toolbar-actions">
-          <button className="secondary-action" onClick={() => setActiveModule('BEOs')} type="button">
-            <ClipboardList size={16} />
-            Open BEO
-          </button>
-          <button
-            className="primary-action"
-            onClick={() =>
-              recordSandboxAction(
-                `${documentType === 'Proposals' ? 'Proposal' : 'Invoice'} send simulated`,
-                `${booking.account} would receive ${booking.eventName} by email in production.`,
-              )
-            }
-            type="button"
-          >
-            <Send size={16} />
-            Send to client
-          </button>
-        </div>
+    <div className="line-items-editor">
+      <div className="line-items-row line-items-header">
+        <span>Description</span>
+        <span>Qty</span>
+        <span>Unit price</span>
+        <span>Total</span>
+        <span />
       </div>
+      {lineItems.map((item) => (
+        <div className="line-items-row" key={item.id}>
+          {editable ? (
+            <input
+              onChange={(event) => updateItem(item.id, 'description', event.target.value)}
+              value={item.description}
+            />
+          ) : (
+            <span>{item.description}</span>
+          )}
+          {editable ? (
+            <input
+              min="0"
+              onChange={(event) => updateItem(item.id, 'quantity', Number(event.target.value))}
+              type="number"
+              value={item.quantity}
+            />
+          ) : (
+            <span>{item.quantity}</span>
+          )}
+          {editable ? (
+            <input
+              min="0"
+              onChange={(event) => updateItem(item.id, 'unitPrice', Number(event.target.value))}
+              type="number"
+              value={item.unitPrice}
+            />
+          ) : (
+            <span>{money(item.unitPrice)}</span>
+          )}
+          <strong>{money(item.quantity * item.unitPrice)}</strong>
+          {editable ? (
+            <button
+              aria-label="Remove line item"
+              className="text-action"
+              onClick={() => removeItem(item.id)}
+              type="button"
+            >
+              &times;
+            </button>
+          ) : (
+            <span />
+          )}
+        </div>
+      ))}
+      {editable && (
+        <button className="secondary-action" onClick={addItem} type="button">
+          <Plus size={14} />
+          Add item
+        </button>
+      )}
+    </div>
+  )
+}
 
-      <div className="paper">
+const DISCOUNT_MODE_LABELS: Record<DiscountMode, string> = {
+  none: 'No discount',
+  percent: 'Percent',
+  value: 'Amount',
+  promo: 'Promo code',
+}
+
+function DiscountControl({
+  discount,
+  editable,
+  onChange,
+}: {
+  discount: Discount
+  editable: boolean
+  onChange: (next: Discount) => void
+}) {
+  return (
+    <div className="discount-control">
+      {editable && (
+        <div className="segmented-control">
+          {(['none', 'percent', 'value', 'promo'] as DiscountMode[]).map((mode) => (
+            <button
+              className={discount.mode === mode ? 'segment active' : 'segment'}
+              key={mode}
+              onClick={() => onChange({ mode, value: mode === 'none' ? 0 : discount.value, code: discount.code })}
+              type="button"
+            >
+              {DISCOUNT_MODE_LABELS[mode]}
+            </button>
+          ))}
+        </div>
+      )}
+      {discount.mode !== 'none' && (
+        <div className="discount-fields">
+          {editable ? (
+            <FormField label={discount.mode === 'percent' ? 'Percent off' : 'Amount off'}>
+              <input
+                min="0"
+                onChange={(event) => onChange({ ...discount, value: Number(event.target.value) })}
+                type="number"
+                value={discount.value}
+              />
+            </FormField>
+          ) : (
+            <span>
+              {discount.mode === 'percent' ? `${discount.value}% off` : `${money(discount.value)} off`}
+            </span>
+          )}
+          {discount.mode === 'promo' &&
+            (editable ? (
+              <FormField label="Promo code">
+                <input
+                  onChange={(event) => onChange({ ...discount, code: event.target.value })}
+                  value={discount.code ?? ''}
+                />
+              </FormField>
+            ) : (
+              discount.code && <span>Code: {discount.code}</span>
+            ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function documentTotal(booking: EventBooking) {
+  const lineItems = getLineItems(booking)
+  const discount = getDiscount(booking)
+  const subtotal = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+  const netOfDiscount = subtotal - discountAmount(subtotal, discount)
+  return netOfDiscount * 1.1 * 1.07
+}
+
+function DocumentsListView({
+  bookings,
+  documentType,
+  onSelect,
+}: {
+  bookings: EventBooking[]
+  documentType: 'Proposals' | 'Invoices'
+  onSelect: (bookingId: string) => void
+}) {
+  const getBookingDate = (booking: EventBooking) => booking.date
+  const availableMonths = availableMonthsOf(bookings, getBookingDate)
+  const availableYears = availableYearsOf(bookings, getBookingDate)
+  const [viewMode, setViewMode] = useState<ListViewMode>('grid')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
+  const [selectedMonth, setSelectedMonth] = useState(
+    () => availableMonths[availableMonths.length - 1] ?? '',
+  )
+  const [selectedYear, setSelectedYear] = useState(
+    () => availableYears[availableYears.length - 1] ?? '',
+  )
+  const visibleBookings = filterAndSortByTime(
+    bookings,
+    getBookingDate,
+    timeFilter,
+    selectedMonth,
+    selectedYear,
+  )
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader title={documentType} />
+        <ListViewControls
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          setSelectedMonth={setSelectedMonth}
+          setSelectedYear={setSelectedYear}
+          setTimeFilter={setTimeFilter}
+          setViewMode={setViewMode}
+          timeFilter={timeFilter}
+          viewMode={viewMode}
+        />
+        {viewMode === 'grid' ? (
+          <div className="resource-grid">
+            {visibleBookings.map((booking) => (
+              <button
+                className="resource-card"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <div className="resource-head">
+                  <span>{booking.id}</span>
+                  <strong>{booking.eventName}</strong>
+                </div>
+                <p>
+                  {booking.account} · {booking.date}
+                </p>
+                <div className="resource-meta">
+                  <span>{booking.status}</span>
+                  <span>{money(documentTotal(booking))} estimated</span>
+                </div>
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No bookings for this period.</p>}
+          </div>
+        ) : (
+          <div className="banner-list">
+            {visibleBookings.map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">{booking.status}</span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.id} · {booking.account}
+                  </span>
+                </div>
+                <span className="banner-meta">{booking.date}</span>
+                <strong className="banner-value">
+                  {money(documentTotal(booking))} estimated
+                </strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No bookings for this period.</p>}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function DocumentsView({
+  account,
+  appendDocumentHistory,
+  booking,
+  documentType,
+  onBack,
+  onOpenBeo,
+  propertyProfile,
+  updateBookingLineItems,
+}: {
+  account: LoginSession
+  appendDocumentHistory: (bookingId: string, note: string) => void
+  booking: EventBooking
+  documentType: 'Proposals' | 'Invoices'
+  onBack: () => void
+  onOpenBeo: () => void
+  propertyProfile: PropertyProfile
+  updateBookingLineItems: (bookingId: string, lineItems: LineItem[], discount: Discount) => void
+}) {
+  const [isEditing, setIsEditing] = useState(false)
+  const canEdit = hasPermission(account.role, 'proposal:edit')
+  const lineItems = getLineItems(booking)
+  const discount = getDiscount(booking)
+  const subtotal = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+  const discountValue = discountAmount(subtotal, discount)
+  const netOfDiscount = subtotal - discountValue
+  const serviceCharge = netOfDiscount * 0.1
+  const tax = (netOfDiscount + serviceCharge) * 0.07
+  const total = netOfDiscount + serviceCharge + tax
+  const documentHistory = [...(booking.documentHistory ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
+
+  const handleLineItemsChange = (nextItems: LineItem[]) => {
+    updateBookingLineItems(booking.id, nextItems, discount)
+  }
+  const handleDiscountChange = (nextDiscount: Discount) => {
+    updateBookingLineItems(booking.id, lineItems, nextDiscount)
+  }
+  const handleToggleEdit = () => {
+    if (isEditing) {
+      appendDocumentHistory(booking.id, 'Line items updated')
+    }
+    setIsEditing((current) => !current)
+  }
+  const [showPdfPreview, setShowPdfPreview] = useState(false)
+
+  const shareWithClient = () =>
+    shareDocument(
+      {
+        title: `${booking.eventName} — ${documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}`,
+        text: `${booking.account}: ${money(total)} total for ${booking.eventName} on ${booking.date}.`,
+      },
+      () => appendDocumentHistory(booking.id, 'Summary copied to clipboard'),
+    )
+
+  const paperDocument = (
+    <div className="paper print-doc">
         <div className="paper-head">
           <div>
             <span>EventPilot</span>
@@ -3215,15 +4932,37 @@ function DocumentsView({
           <Detail label="Guests" value={`${booking.expectedGuests} expected`} />
         </div>
 
-        <PaperSection title="Package inclusions">
-          <TagList items={[...booking.menu, ...booking.av, ...booking.staffing]} />
+        <PaperSection title="Line items">
+          <LineItemsEditor
+            editable={isEditing}
+            lineItems={lineItems}
+            onChange={handleLineItemsChange}
+          />
         </PaperSection>
+
+        {(isEditing || discount.mode !== 'none') && (
+          <PaperSection title="Discount">
+            <DiscountControl
+              discount={discount}
+              editable={isEditing}
+              onChange={handleDiscountChange}
+            />
+          </PaperSection>
+        )}
 
         <div className="invoice-table">
           <div>
-            <span>Event package and venue estimate</span>
+            <span>Subtotal</span>
             <strong>{money(subtotal)}</strong>
           </div>
+          {discountValue > 0 && (
+            <div>
+              <span>
+                Discount{discount.mode === 'promo' && discount.code ? ` (${discount.code})` : ''}
+              </span>
+              <strong>-{money(discountValue)}</strong>
+            </div>
+          )}
           <div>
             <span>Service charge 10%</span>
             <strong>{money(serviceCharge)}</strong>
@@ -3241,40 +4980,365 @@ function DocumentsView({
             <strong>{money(booking.depositDue)}</strong>
           </div>
         </div>
+
+        <div className="proposal-signature-row">
+          <div className="signatory-column">
+            <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
+            <small>
+              {propertyProfile.name} — {propertyProfile.signatoryTitle || 'Management'}
+            </small>
+          </div>
+          <div className="signatory-column">
+            <strong>{booking.account}</strong>
+            <small>Client acceptance — {booking.contact}</small>
+          </div>
+        </div>
+    </div>
+  )
+
+  if (showPdfPreview) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={() => setShowPdfPreview(false)}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back
+        </button>
+
+        <section className="document-preview single-document">
+          <div className="document-toolbar no-print">
+            <div>
+              <p className="eyebrow">
+                {documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}
+              </p>
+              <h2>{booking.eventName}</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button className="secondary-action" onClick={shareWithClient} type="button">
+                <Send size={16} />
+                Share
+              </button>
+              <button
+                className="primary-action"
+                onClick={() => {
+                  appendDocumentHistory(booking.id, 'Printed / exported as PDF')
+                  window.print()
+                }}
+                type="button"
+              >
+                <Download size={16} />
+                Print
+              </button>
+            </div>
+          </div>
+          {paperDocument}
+        </section>
       </div>
-    </section>
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to {documentType}
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">{documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}</p>
+            <h2>{booking.eventName}</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button className="secondary-action" onClick={onOpenBeo} type="button">
+              <ClipboardList size={16} />
+              Open BEO
+            </button>
+            {canEdit && (
+              <button
+                className={isEditing ? 'secondary-action' : 'primary-action'}
+                onClick={handleToggleEdit}
+                type="button"
+              >
+                {isEditing ? 'Done editing' : 'Edit line items'}
+              </button>
+            )}
+            <button className="secondary-action" onClick={shareWithClient} type="button">
+              <Send size={16} />
+              Send to client
+            </button>
+            <button
+              className="secondary-action"
+              onClick={() => setShowPdfPreview(true)}
+              type="button"
+            >
+              <Download size={16} />
+              View PDF
+            </button>
+          </div>
+        </div>
+
+        {paperDocument}
+      </section>
+
+      <section className="panel no-print">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {documentHistory.length ? (
+            documentHistory.map((entry) => (
+              <div className="timeline-entry" key={entry.id}>
+                <span className="timeline-dot" />
+                <div>
+                  <strong>{entry.note}</strong>
+                  <span>{entry.timestamp}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p>No history recorded yet.</p>
+          )}
+        </div>
+      </section>
+    </div>
   )
 }
 
-function ProductsView() {
+function emptyProduct(): Product {
+  return {
+    id: `PRD-${Date.now()}`,
+    name: 'New package',
+    category: 'Package',
+    description: '',
+    price: null,
+    unit: 'per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: false,
+    tags: [],
+  }
+}
+
+function ProductDetailView({
+  canDelete,
+  onBack,
+  onDelete,
+  onSave,
+  product,
+}: {
+  canDelete: boolean
+  onBack: () => void
+  onDelete: () => void
+  onSave: (product: Product) => void
+  product: Product
+}) {
+  const [draft, setDraft] = useState<Product>(product)
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(product)
+
+  const setField = <K extends keyof Product>(field: K, value: Product[K]) => {
+    setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleBack = () => {
+    if (isDirty && !window.confirm('Discard unsaved changes to this package?')) return
+    onBack()
+  }
+
+  const handleSave = () => {
+    onSave(draft)
+    onBack()
+  }
+
   return (
-    <section className="resource-grid">
-      {products.map((product) => (
-        <article className="resource-card" key={product.id}>
-          <div className="resource-head">
-            <span>{product.category}</span>
-            <strong>{product.name}</strong>
+    <div className="page-stack">
+      <button className="text-action back-action" onClick={handleBack} type="button">
+        <ChevronLeft size={16} />
+        Back to Packages
+      </button>
+
+      <section className="panel">
+        <div className="drawer-head">
+          <div>
+            <p className="eyebrow">{draft.category}</p>
+            <h2>{draft.name}</h2>
           </div>
-          <p>{product.description}</p>
-          <div className="resource-meta">
-            <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
-            <span>{product.unit}</span>
-            <span>{product.availability}</span>
-          </div>
-          <TagList items={product.tags} />
-          {product.sourceUrl && (
-            <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
-              <ExternalLink size={14} />
-              Source page
-            </a>
+          {canDelete && (
+            <button className="secondary-action" onClick={onDelete} type="button">
+              Delete
+            </button>
           )}
-          <div className="toggle-row">
-            <span>Show on BEO</span>
-            <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
-          </div>
-        </article>
-      ))}
-    </section>
+        </div>
+
+        <div className="plan-edit-form">
+          <FormField label="Name">
+            <input onChange={(event) => setField('name', event.target.value)} value={draft.name} />
+          </FormField>
+          <FormField label="Category">
+            <input
+              onChange={(event) => setField('category', event.target.value)}
+              value={draft.category}
+            />
+          </FormField>
+          <FormField label="Description">
+            <textarea
+              onChange={(event) => setField('description', event.target.value)}
+              value={draft.description}
+            />
+          </FormField>
+          <FormField label="Price">
+            <input
+              min="0"
+              onChange={(event) =>
+                setField('price', event.target.value === '' ? null : Number(event.target.value))
+              }
+              type="number"
+              value={draft.price ?? ''}
+            />
+          </FormField>
+          <FormField label="Unit">
+            <input onChange={(event) => setField('unit', event.target.value)} value={draft.unit} />
+          </FormField>
+          <FormField label="Availability">
+            <input
+              onChange={(event) => setField('availability', event.target.value)}
+              value={draft.availability}
+            />
+          </FormField>
+          <FormField label="Display price to client">
+            <select
+              onChange={(event) => setField('displayPrice', event.target.value === 'Yes')}
+              value={draft.displayPrice ? 'Yes' : 'No'}
+            >
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
+          </FormField>
+          <FormField label="Show on BEO">
+            <select
+              onChange={(event) => setField('displayOnBeo', event.target.value === 'Yes')}
+              value={draft.displayOnBeo ? 'Yes' : 'No'}
+            >
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
+          </FormField>
+        </div>
+
+        <div className="card-actions">
+          <button className="secondary-action" onClick={handleBack} type="button">
+            Cancel
+          </button>
+          <button className="primary-action" onClick={handleSave} type="button">
+            Save changes
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ProductsView({
+  account,
+  products,
+  setProducts,
+}: {
+  account: LoginSession
+  products: Product[]
+  setProducts: (next: Product[] | ((current: Product[]) => Product[])) => void
+}) {
+  const [viewingProductId, setViewingProductId] = useState<string | null>(null)
+  const canEdit = hasPermission(account.role, 'packages:edit')
+
+  const createProduct = () => {
+    const product = emptyProduct()
+    setProducts((current) => [product, ...current])
+    setViewingProductId(product.id)
+  }
+
+  const deleteProduct = (id: string) => {
+    if (!window.confirm('Delete this package? This cannot be undone.')) return
+    setProducts((current) => current.filter((product) => product.id !== id))
+    if (viewingProductId === id) setViewingProductId(null)
+  }
+
+  const viewingProduct = products.find((product) => product.id === viewingProductId)
+
+  if (viewingProduct) {
+    return (
+      <ProductDetailView
+        canDelete={canEdit}
+        onBack={() => setViewingProductId(null)}
+        onDelete={() => deleteProduct(viewingProduct.id)}
+        onSave={(updated) =>
+          setProducts((current) =>
+            current.map((product) => (product.id === updated.id ? updated : product)),
+          )
+        }
+        product={viewingProduct}
+      />
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader
+          action={canEdit ? 'New package' : undefined}
+          onAction={canEdit ? createProduct : undefined}
+          title="Packages"
+        />
+        <div className="resource-grid">
+          {products.map((product) => (
+            <article className="resource-card" key={product.id}>
+              <div className="resource-head">
+                <span>{product.category}</span>
+                <strong>{product.name}</strong>
+              </div>
+              <p>{product.description}</p>
+              <div className="resource-meta">
+                <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
+                <span>{product.unit}</span>
+                <span>{product.availability}</span>
+              </div>
+              <TagList items={product.tags} />
+              {product.sourceUrl && (
+                <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
+                  <ExternalLink size={14} />
+                  Source page
+                </a>
+              )}
+              <div className="toggle-row">
+                <span>Show on BEO</span>
+                <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
+              </div>
+              {canEdit && (
+                <div className="card-actions">
+                  <button
+                    className="primary-action"
+                    onClick={() => setViewingProductId(product.id)}
+                    type="button"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="secondary-action"
+                    onClick={() => deleteProduct(product.id)}
+                    type="button"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </article>
+          ))}
+          {!products.length && <p>No packages yet.</p>}
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -3348,22 +5412,114 @@ function TasksView({ bookings }: { bookings: EventBooking[] }) {
   )
 }
 
+type ReportKey =
+  | 'monthly-banquet-calendar'
+  | 'weekly-operations-report'
+  | 'lost-business-analysis'
+  | 'package-popularity'
+  | 'venue-utilization'
+  | 'salesperson-performance'
+
+const REPORT_ITEMS: Array<{ key: ReportKey; label: string }> = [
+  { key: 'monthly-banquet-calendar', label: 'Monthly banquet calendar' },
+  { key: 'weekly-operations-report', label: 'Weekly operations report' },
+  { key: 'lost-business-analysis', label: 'Lost business analysis' },
+  { key: 'package-popularity', label: 'Package popularity' },
+  { key: 'venue-utilization', label: 'Venue utilization' },
+  { key: 'salesperson-performance', label: 'Salesperson performance' },
+]
+
 function ReportsView({
   bookings,
   confirmedRevenue,
   forecastRevenue,
+  leads,
   pipelineRevenue,
-  recordSandboxAction,
+  products,
 }: {
   bookings: EventBooking[]
   confirmedRevenue: number
   forecastRevenue: number
+  leads: Lead[]
   pipelineRevenue: number
-  recordSandboxAction: (title: string, detail: string) => void
+  products: Product[]
 }) {
+  const [activeReport, setActiveReport] = useState<ReportKey | null>(null)
   const confirmed = bookings.filter((booking) => booking.status === 'Confirmed').length
   const tentative = bookings.filter((booking) => booking.status === 'Tentative').length
   const outstanding = bookings.filter((booking) => booking.paymentStatus !== 'Paid').length
+
+  const monthlyBanquetCalendar = useMemo(() => {
+    const groups = new Map<string, EventBooking[]>()
+    bookings.forEach((booking) => {
+      const key = toMonthKey(toLocalDate(booking.date))
+      groups.set(key, [...(groups.get(key) ?? []), booking])
+    })
+    return [...groups.entries()].sort(([first], [second]) => first.localeCompare(second))
+  }, [bookings])
+
+  const weeklyOperations = useMemo(() => {
+    const now = new Date()
+    const weekOffset = (now.getDay() + 6) % 7
+    const weekStart = toDateKey(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - weekOffset),
+    )
+    const weekEnd = toDateKey(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - weekOffset + 6),
+    )
+    return bookings
+      .filter((booking) => booking.date >= weekStart && booking.date <= weekEnd)
+      .map((booking) => ({
+        booking,
+        bookingTasks: tasks.filter((task) => task.bookingId === booking.id),
+      }))
+  }, [bookings])
+
+  const lostBookings = bookings.filter((booking) => booking.status === 'Lost')
+  const lostLeads = leads.filter((lead) => lead.stage === 'Lost')
+
+  const packagePopularity = useMemo(() => {
+    const counts = new Map<string, number>()
+    bookings.forEach((booking) => {
+      if (!booking.packageName) return
+      counts.set(booking.packageName, (counts.get(booking.packageName) ?? 0) + 1)
+    })
+    return [...counts.entries()]
+      .map(([name, count]) => ({
+        name,
+        count,
+        product: products.find((product) => product.name === name),
+      }))
+      .sort((first, second) => second.count - first.count)
+  }, [bookings, products])
+
+  const venueUtilization = useMemo(
+    () =>
+      venues.map((venue) => ({
+        venue,
+        activeBookings: bookings.filter(
+          (booking) => booking.venue === venue.name && booking.status !== 'Cancelled',
+        ).length,
+      })),
+    [bookings],
+  )
+
+  const salespersonPerformance = useMemo(() => {
+    const totals = new Map<string, { revenue: number; forecast: number; count: number }>()
+    bookings.forEach((booking) => {
+      const current = totals.get(booking.owner) ?? { revenue: 0, forecast: 0, count: 0 }
+      totals.set(booking.owner, {
+        revenue: current.revenue + booking.revenue,
+        forecast:
+          current.forecast +
+          (booking.status === 'Lost' || booking.status === 'Cancelled'
+            ? 0
+            : booking.forecastRevenue),
+        count: current.count + 1,
+      })
+    })
+    return [...totals.entries()].sort(([, first], [, second]) => second.revenue - first.revenue)
+  }, [bookings])
 
   return (
     <div className="page-stack">
@@ -3371,7 +5527,7 @@ function ReportsView({
         <MetricCard icon={ShieldCheck} label="Confirmed events" value={confirmed.toString()} detail="Signed bookings" />
         <MetricCard icon={Clock3} label="Tentative holds" value={tentative.toString()} detail="Hold expiry monitored" />
         <MetricCard icon={ReceiptText} label="Outstanding invoices" value={outstanding.toString()} detail="Deposit or final payment" />
-        <MetricCard icon={BarChart3} label="Pipeline value" value={money(pipelineRevenue)} detail="Open opportunities" />
+        <MetricCard icon={BarChart3} label="Pipeline value" value={money(pipelineRevenue)} detail="Open leads" />
       </section>
 
       <section className="split-layout">
@@ -3386,34 +5542,435 @@ function ReportsView({
         <div className="panel">
           <PanelHeader title="Report library" />
           <div className="report-list">
-            {[
-              'Monthly banquet calendar',
-              'Weekly operations report',
-              'Lost business analysis',
-              'Package popularity',
-              'Venue utilization',
-              'Salesperson performance',
-            ].map((report) => (
+            {REPORT_ITEMS.map((report) => (
               <button
-                className="report-item"
-                key={report}
+                className={activeReport === report.key ? 'report-item active' : 'report-item'}
+                key={report.key}
                 onClick={() =>
-                  recordSandboxAction(
-                    'Report opened',
-                    `${report} is available as a local sandbox drilldown.`,
-                  )
+                  setActiveReport((current) => (current === report.key ? null : report.key))
                 }
                 type="button"
               >
                 <BarChart3 size={16} />
-                {report}
+                {report.label}
                 <ChevronRight size={16} />
               </button>
             ))}
           </div>
         </div>
       </section>
+
+      {activeReport && (
+        <section className="panel report-drilldown">
+          <PanelHeader title={REPORT_ITEMS.find((item) => item.key === activeReport)?.label ?? ''} />
+          <div className="stage-list">
+            {activeReport === 'monthly-banquet-calendar' &&
+              (monthlyBanquetCalendar.length ? (
+                monthlyBanquetCalendar.map(([month, monthBookings]) => (
+                  <div className="stage-item" key={month}>
+                    <div>
+                      <strong>{month}</strong>
+                      <span>{monthBookings.map((booking) => booking.eventName).join(', ')}</span>
+                    </div>
+                    <em>{monthBookings.length} event{monthBookings.length === 1 ? '' : 's'}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No bookings scheduled.</p>
+              ))}
+
+            {activeReport === 'weekly-operations-report' &&
+              (weeklyOperations.length ? (
+                weeklyOperations.map(({ booking, bookingTasks }) => (
+                  <div className="stage-item" key={booking.id}>
+                    <div>
+                      <strong>{booking.eventName}</strong>
+                      <span>
+                        {booking.date} · {bookingTasks.length} task
+                        {bookingTasks.length === 1 ? '' : 's'}
+                        {bookingTasks.length
+                          ? `: ${bookingTasks.map((task) => task.title).join(', ')}`
+                          : ''}
+                      </span>
+                    </div>
+                    <em>{booking.status}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No bookings scheduled this week.</p>
+              ))}
+
+            {activeReport === 'lost-business-analysis' &&
+              (lostBookings.length || lostLeads.length ? (
+                <>
+                  {lostBookings.map((booking) => (
+                    <div className="stage-item" key={booking.id}>
+                      <div>
+                        <strong>{booking.eventName}</strong>
+                        <span>
+                          {booking.leadSource} · {booking.nextAction}
+                        </span>
+                      </div>
+                      <em>{money(booking.forecastRevenue)}</em>
+                    </div>
+                  ))}
+                  {lostLeads.map((lead) => (
+                    <div className="stage-item" key={lead.id}>
+                      <div>
+                        <strong>
+                          {lead.name}
+                          {lead.company ? ` · ${lead.company}` : ''}
+                        </strong>
+                        <span>{lead.lostReason || 'No lost reason recorded'}</span>
+                      </div>
+                      <em>{money(lead.estimatedValue)}</em>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <p>No lost business recorded.</p>
+              ))}
+
+            {activeReport === 'package-popularity' &&
+              (packagePopularity.length ? (
+                packagePopularity.map((row) => (
+                  <div className="stage-item" key={row.name}>
+                    <div>
+                      <strong>{row.name}</strong>
+                      <span>
+                        {row.product
+                          ? `${row.product.category} · ${priceLabel(row.product.price)}`
+                          : 'Not in package catalog'}
+                      </span>
+                    </div>
+                    <em>{row.count} booking{row.count === 1 ? '' : 's'}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No packages booked yet.</p>
+              ))}
+
+            {activeReport === 'venue-utilization' &&
+              venueUtilization.map(({ venue, activeBookings }) => (
+                <div className="stage-item" key={venue.id}>
+                  <div>
+                    <strong>{venue.name}</strong>
+                    <span>
+                      {venue.utilization}% baseline utilization · {activeBookings} active booking
+                      {activeBookings === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <em>{capacityLabel(venue.capacity)} cap</em>
+                </div>
+              ))}
+
+            {activeReport === 'salesperson-performance' &&
+              (salespersonPerformance.length ? (
+                salespersonPerformance.map(([owner, totals]) => (
+                  <div className="stage-item" key={owner}>
+                    <div>
+                      <strong>{owner}</strong>
+                      <span>
+                        {totals.count} booking{totals.count === 1 ? '' : 's'} ·{' '}
+                        {money(totals.forecast)} forecast
+                      </span>
+                    </div>
+                    <em>{money(totals.revenue)}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No bookings recorded.</p>
+              ))}
+          </div>
+        </section>
+      )}
     </div>
+  )
+}
+
+/**
+ * Issuer details — the legal identity printed on quotations, invoices and tax
+ * invoices. Saved explicitly, since these values end up on documents that are
+ * filed with the Revenue Department.
+ */
+function IssuerSettingsPanel() {
+  const { issuer, setIssuer, save, ready, error } = useIssuerSettings(true)
+  const [notice, setNotice] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const setField = <K extends keyof IssuerSettings>(field: K, value: IssuerSettings[K]) => {
+    setIssuer((current) => ({ ...current, [field]: value }))
+    setNotice('')
+  }
+
+  const setAddress = <K extends keyof ThaiAddress>(field: K, value: ThaiAddress[K]) => {
+    setIssuer((current) => ({
+      ...current,
+      billing_address: { ...current.billing_address, [field]: value },
+    }))
+    setNotice('')
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    const failure = await save(issuer)
+    setSaving(false)
+    setNotice(failure ?? 'Issuer details saved.')
+  }
+
+  // Logos are stored inline as a data URL so the document renderer needs no
+  // network fetch (and no public bucket) to draw the letterhead.
+  const handleLogo = (file: File | undefined) => {
+    if (!file) return
+    if (file.size > 512 * 1024) {
+      setNotice('Logo must be under 512 KB.')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => setField('logo_url', String(reader.result ?? ''))
+    reader.readAsDataURL(file)
+  }
+
+  if (!ready) {
+    return (
+      <section className="panel" aria-busy="true">
+        <p className="empty-state">Loading issuer details…</p>
+      </section>
+    )
+  }
+
+  const address = issuer.billing_address
+  const taxIdDigits = issuer.tax_id.replace(/\D/g, '')
+  const taxIdValid = taxIdDigits.length === 13
+
+  return (
+    <section className="page-stack">
+      <div className="panel">
+        <PanelHeader
+          title="Issuer identity"
+          detail="Printed on every quotation, invoice, and tax invoice."
+        />
+        <div className="form-grid">
+          <FormField label="Company name (EN)" requiredLabel="Required" required>
+            <input
+              onChange={(event) => setField('company_name', event.target.value)}
+              value={issuer.company_name}
+            />
+          </FormField>
+          <FormField label="Company name (TH)">
+            <input
+              onChange={(event) => setField('company_name_th', event.target.value)}
+              placeholder="บริษัท ..."
+              value={issuer.company_name_th}
+            />
+          </FormField>
+          <FormField
+            label="Tax ID (13 digits)"
+            hint={
+              issuer.tax_id && !taxIdValid
+                ? `${taxIdDigits.length} of 13 digits`
+                : undefined
+            }
+          >
+            <input
+              inputMode="numeric"
+              onChange={(event) => setField('tax_id', event.target.value)}
+              placeholder="0000000000000"
+              value={issuer.tax_id}
+            />
+          </FormField>
+          <FormField label="Office type">
+            <select
+              onChange={(event) =>
+                setField('office_type', event.target.value as IssuerSettings['office_type'])
+              }
+              value={issuer.office_type}
+            >
+              <option value="head_office">Head office (สำนักงานใหญ่)</option>
+              <option value="branch">Branch (สาขา)</option>
+            </select>
+          </FormField>
+          {issuer.office_type === 'branch' && (
+            <FormField label="Branch code" requiredLabel="Required" required>
+              <input
+                inputMode="numeric"
+                onChange={(event) => setField('branch_code', event.target.value)}
+                placeholder="00001"
+                value={issuer.branch_code}
+              />
+            </FormField>
+          )}
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Registered address"
+          detail="Thai and English are stored separately so a Thai tax invoice never prints mixed script."
+        />
+        <div className="form-grid">
+          <FormField label="House / building no.">
+            <input
+              onChange={(event) => setAddress('house_no', event.target.value)}
+              value={address.house_no}
+            />
+          </FormField>
+          <FormField label="Soi">
+            <input
+              onChange={(event) => setAddress('soi', event.target.value)}
+              value={address.soi}
+            />
+          </FormField>
+          <FormField label="Road">
+            <input
+              onChange={(event) => setAddress('road', event.target.value)}
+              value={address.road}
+            />
+          </FormField>
+          <FormField label="Postcode">
+            <input
+              inputMode="numeric"
+              onChange={(event) => setAddress('postcode', event.target.value)}
+              value={address.postcode}
+            />
+          </FormField>
+          <FormField label="Subdistrict / ตำบล (TH)">
+            <input
+              onChange={(event) => setAddress('subdistrict', event.target.value)}
+              value={address.subdistrict}
+            />
+          </FormField>
+          <FormField label="Subdistrict (EN)">
+            <input
+              onChange={(event) => setAddress('subdistrict_en', event.target.value)}
+              value={address.subdistrict_en}
+            />
+          </FormField>
+          <FormField label="District / อำเภอ (TH)">
+            <input
+              onChange={(event) => setAddress('district', event.target.value)}
+              value={address.district}
+            />
+          </FormField>
+          <FormField label="District (EN)">
+            <input
+              onChange={(event) => setAddress('district_en', event.target.value)}
+              value={address.district_en}
+            />
+          </FormField>
+          <FormField label="Province / จังหวัด (TH)">
+            <input
+              onChange={(event) => setAddress('province', event.target.value)}
+              value={address.province}
+            />
+          </FormField>
+          <FormField label="Province (EN)">
+            <input
+              onChange={(event) => setAddress('province_en', event.target.value)}
+              value={address.province_en}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader title="Contact and signature" />
+        <div className="form-grid">
+          <FormField label="Phone">
+            <input
+              onChange={(event) => setField('phone', event.target.value)}
+              value={issuer.phone}
+            />
+          </FormField>
+          <FormField label="Email">
+            <input
+              onChange={(event) => setField('email', event.target.value)}
+              type="email"
+              value={issuer.email}
+            />
+          </FormField>
+          <FormField label="Website">
+            <input
+              onChange={(event) => setField('website', event.target.value)}
+              value={issuer.website}
+            />
+          </FormField>
+          <FormField label="Support email">
+            <input
+              onChange={(event) => setField('support_email', event.target.value)}
+              type="email"
+              value={issuer.support_email}
+            />
+          </FormField>
+          <FormField label="Signatory name">
+            <input
+              onChange={(event) => setField('signatory_name', event.target.value)}
+              value={issuer.signatory_name}
+            />
+          </FormField>
+          <FormField label="Signatory title">
+            <input
+              onChange={(event) => setField('signatory_title', event.target.value)}
+              value={issuer.signatory_title}
+            />
+          </FormField>
+          <FormField label="PromptPay ID">
+            <input
+              onChange={(event) => setField('promptpay_id', event.target.value)}
+              value={issuer.promptpay_id}
+            />
+          </FormField>
+          <FormField label="PromptPay account name">
+            <input
+              onChange={(event) => setField('promptpay_name', event.target.value)}
+              value={issuer.promptpay_name}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader title="Letterhead logo" detail="PNG or SVG, under 512 KB." />
+        <div className="issuer-logo-row">
+          {issuer.logo_url ? (
+            <img alt="Current logo" className="issuer-logo-preview" src={issuer.logo_url} />
+          ) : (
+            <p className="empty-state">No logo set — documents print the company name.</p>
+          )}
+          <div className="status-actions">
+            <input
+              accept="image/png,image/svg+xml,image/jpeg"
+              onChange={(event) => handleLogo(event.target.files?.[0])}
+              type="file"
+            />
+            {issuer.logo_url && (
+              <button
+                className="secondary-action"
+                onClick={() => setField('logo_url', '')}
+                type="button"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="status-actions">
+          <button
+            className="primary-action"
+            disabled={saving}
+            onClick={() => void handleSave()}
+            type="button"
+          >
+            <ShieldCheck size={17} />
+            {saving ? 'Saving…' : 'Save issuer details'}
+          </button>
+        </div>
+        {(notice || error) && <p className="admin-notice">{notice || error}</p>}
+      </div>
+    </section>
   )
 }
 
@@ -3421,6 +5978,8 @@ function AdminConsoleView({
   adminCredentialSettings,
   adminPlans,
   clientCompanies,
+  clientsError,
+  clientsReady,
   expansionPacks,
   setAdminCredentialSettings,
   setAdminPlans,
@@ -3430,6 +5989,8 @@ function AdminConsoleView({
   adminCredentialSettings: AdminCredentialSettings
   adminPlans: SaaSPlan[]
   clientCompanies: ClientCompany[]
+  clientsError: string
+  clientsReady: boolean
   expansionPacks: ExpansionPack[]
   setAdminCredentialSettings: (
     next:
@@ -3448,9 +6009,11 @@ function AdminConsoleView({
   const [selectedClientId, setSelectedClientId] = useState(
     clientCompanies[0]?.id ?? '',
   )
+  const [currentPassword, setCurrentPassword] = useState('')
   const [passwordDraft, setPasswordDraft] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [securityNotice, setSecurityNotice] = useState('')
+  const [clientNotice, setClientNotice] = useState('')
   const [editingPlanId, setEditingPlanId] = useState<SaaSTierId | null>(null)
   const [editingPackId, setEditingPackId] = useState<string | null>(null)
   const selectedClient =
@@ -3525,25 +6088,33 @@ function AdminConsoleView({
     setEditingPackId(id)
   }
 
-  const addClientCompany = () => {
-    const id = `CLIENT-${String(Date.now()).slice(-5)}${Math.random().toString(36).slice(2, 5)}`
-    const nextClient: ClientCompany = {
-      id,
-      companyName: 'New client company',
-      propertyType: 'Hotel / venue',
-      planId: 'Starter',
-      status: 'Pilot',
-      adminEmail: 'admin@example.com',
-      renewalDate: toDateKey(new Date()),
-      activeUsers: 1,
-      userLimitOverride: 1,
-      bookingLimitOverride: 20,
-      supportOwner: 'EventPilot Admin',
-      notes: 'New local sandbox account.',
+  // Creates the row server-side first, so the client carries its real database
+  // id — billing documents will reference it.
+  const addClientCompany = async () => {
+    setClientNotice('')
+    try {
+      const data = await consoleCall('upsert_client', {
+        client: {
+          name: 'New client company',
+          property_type: 'Hotel / venue',
+          plan: 'Starter',
+          account_status: 'pilot',
+          renewal_date: toDateKey(new Date()),
+          active_users: 1,
+          allowed_users: 1,
+          booking_limit: 20,
+          support_owner: 'EventPilot Admin',
+        },
+      })
+      const created = rowToClient(data.client as Record<string, unknown>)
+      setClientCompanies((currentClients) => [created, ...currentClients])
+      setSelectedClientId(created.id)
+      setActiveTab('Clients')
+    } catch (error) {
+      setClientNotice(
+        error instanceof Error ? error.message : 'Could not create the client company.',
+      )
     }
-    setClientCompanies((currentClients) => [nextClient, ...currentClients])
-    setSelectedClientId(id)
-    setActiveTab('Clients')
   }
 
   const updateAdminCredential = <K extends keyof AdminCredentialSettings>(
@@ -3556,7 +6127,9 @@ function AdminConsoleView({
     }))
   }
 
-  const handlePasswordUpdate = () => {
+  // Changes the signed-in console admin's real password via the console edge
+  // function (the database stores only a bcrypt hash).
+  const handlePasswordUpdate = async () => {
     if (passwordDraft.length < adminCredentialSettings.minimumPasswordLength) {
       setSecurityNotice(
         `Password must be at least ${adminCredentialSettings.minimumPasswordLength} characters.`,
@@ -3569,13 +6142,29 @@ function AdminConsoleView({
       return
     }
 
+    if (!currentPassword) {
+      setSecurityNotice('Enter your current password to confirm the change.')
+      return
+    }
+
+    try {
+      await consoleCall('change_password', {
+        current_password: currentPassword,
+        new_password: passwordDraft,
+      })
+    } catch (error) {
+      setSecurityNotice(error instanceof Error ? error.message : 'Password change failed.')
+      return
+    }
+
     setAdminCredentialSettings((currentSettings) => ({
       ...currentSettings,
       lastPasswordChange: toDateKey(new Date()),
     }))
+    setCurrentPassword('')
     setPasswordDraft('')
     setPasswordConfirm('')
-    setSecurityNotice('Admin password policy updated locally. Plain text is not stored.')
+    setSecurityNotice('Console password updated.')
   }
 
   return (
@@ -3585,11 +6174,19 @@ function AdminConsoleView({
           <p className="eyebrow">SaaS control center</p>
           <h2>Manage tenant companies, plan limits, and owner access</h2>
         </div>
-        <button className="primary-action" onClick={addClientCompany} type="button">
+        <button
+          className="primary-action"
+          onClick={() => void addClientCompany()}
+          type="button"
+        >
           <Plus size={17} />
           Add client company
         </button>
       </section>
+
+      {(clientsError || clientNotice) && (
+        <p className="admin-notice">{clientsError || clientNotice}</p>
+      )}
 
       <section className="metric-grid">
         <MetricCard icon={Building2} label="Client companies" value={clientCompanies.length.toString()} detail={`${activeClientCount} active accounts`} />
@@ -3599,7 +6196,7 @@ function AdminConsoleView({
       </section>
 
       <div className="admin-tabs" role="tablist" aria-label="Admin console sections">
-        {(['Clients', 'Plans', 'Security'] as const).map((tab) => (
+        {(['Clients', 'Plans', 'Company', 'Security'] as const).map((tab) => (
           <button
             className={activeTab === tab ? 'filter-chip filter-all active' : 'filter-chip'}
             key={tab}
@@ -3612,6 +6209,21 @@ function AdminConsoleView({
           </button>
         ))}
       </div>
+
+      {activeTab === 'Clients' && !clientsReady && (
+        <section className="panel" aria-busy="true">
+          <p className="empty-state">Loading client companies…</p>
+        </section>
+      )}
+
+      {activeTab === 'Clients' && clientsReady && clientCompanies.length === 0 && (
+        <section className="panel">
+          <p className="empty-state">
+            No client companies yet. Add one to start issuing quotations and
+            invoices against it.
+          </p>
+        </section>
+      )}
 
       {activeTab === 'Clients' && selectedClient && (
         <section className="admin-console-layout">
@@ -3643,7 +6255,8 @@ function AdminConsoleView({
           <div className="panel admin-editor">
             <div className="panel-header">
               <div>
-                <p className="eyebrow">{selectedClient.id}</p>
+                {/* Database ids are UUIDs; show a short readable reference. */}
+                <p className="eyebrow">CLIENT-{selectedClient.id.slice(0, 8).toUpperCase()}</p>
                 <h2>{selectedClient.companyName}</h2>
               </div>
               <StatusBadge status={selectedClient.status} />
@@ -4104,6 +6717,8 @@ function AdminConsoleView({
         </div>
       )}
 
+      {activeTab === 'Company' && <IssuerSettingsPanel />}
+
       {activeTab === 'Security' && (
         <section className="admin-console-layout admin-security-layout">
           <div className="panel admin-credentials-panel">
@@ -4126,8 +6741,17 @@ function AdminConsoleView({
                   value={adminCredentialSettings.adminEmail}
                 />
               </FormField>
-              <FormField label="New admin password">
+              <FormField label="Current console password">
                 <input
+                  autoComplete="current-password"
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  type="password"
+                  value={currentPassword}
+                />
+              </FormField>
+              <FormField label="New console password">
+                <input
+                  autoComplete="new-password"
                   onChange={(event) => setPasswordDraft(event.target.value)}
                   type="password"
                   value={passwordDraft}
@@ -4135,6 +6759,7 @@ function AdminConsoleView({
               </FormField>
               <FormField label="Confirm password">
                 <input
+                  autoComplete="new-password"
                   onChange={(event) => setPasswordConfirm(event.target.value)}
                   type="password"
                   value={passwordConfirm}
@@ -4142,9 +6767,13 @@ function AdminConsoleView({
               </FormField>
             </div>
             <div className="status-actions">
-              <button className="primary-action" onClick={handlePasswordUpdate} type="button">
+              <button
+                className="primary-action"
+                onClick={() => void handlePasswordUpdate()}
+                type="button"
+              >
                 <ShieldCheck size={17} />
-                Update password policy
+                Update console password
               </button>
             </div>
             {securityNotice && <p className="admin-notice">{securityNotice}</p>}
@@ -4280,6 +6909,7 @@ function SettingsView({
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<PropertyProfile>(propertyProfile)
+  const canEditProfile = hasPermission(account.role, 'admin:settings')
 
   const startEditing = () => {
     setDraft(propertyProfile)
@@ -4338,9 +6968,11 @@ function SettingsView({
                   </button>
                 </div>
               ) : (
-                <button className="secondary-action" onClick={startEditing} type="button">
-                  Edit
-                </button>
+                canEditProfile && (
+                  <button className="secondary-action" onClick={startEditing} type="button">
+                    Edit
+                  </button>
+                )
               )}
             </div>
           </div>
@@ -4407,12 +7039,36 @@ function SettingsView({
                   value={draft.lineOfficial}
                 />
               </FormField>
+              <FormField label="Signatory name" hint="Printed on proposals, invoices, and BEOs">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, signatoryName: event.target.value }))
+                  }
+                  value={draft.signatoryName}
+                />
+              </FormField>
+              <FormField label="Signatory title">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, signatoryTitle: event.target.value }))
+                  }
+                  value={draft.signatoryTitle}
+                />
+              </FormField>
             </div>
           ) : (
             <div className="profile-grid property-profile-grid">
               <Detail label="Address" value={propertyProfile.address} />
               <Detail label="Phone" value={propertyProfile.phones.join(', ')} />
               <Detail label="Line Official" value={propertyProfile.lineOfficial} />
+              <Detail
+                label="Signatory"
+                value={
+                  propertyProfile.signatoryName
+                    ? `${propertyProfile.signatoryName}${propertyProfile.signatoryTitle ? ` — ${propertyProfile.signatoryTitle}` : ''}`
+                    : 'Not set'
+                }
+              />
               <div className="detail-item detail-item-wide">
                 <dt>Email routing</dt>
                 <dd>
@@ -4444,7 +7100,7 @@ function SettingsView({
         updateProfileName={updateProfileName}
       />
 
-      {isSupabaseEnabled && account.role === 'top_management' && (
+      {isSupabaseEnabled && hasPermission(account.role, 'admin:userManagement') && (
         <UserManagementPanel currentUserId={currentUserId} />
       )}
 
@@ -4830,16 +7486,21 @@ function MetricCard({
 
 function PanelHeader({
   action,
+  detail,
   onAction,
   title,
 }: {
   action?: string
+  detail?: string
   onAction?: () => void
   title: string
 }) {
   return (
     <div className="panel-header">
-      <h2>{title}</h2>
+      <div>
+        <h2>{title}</h2>
+        {detail && <p className="panel-header-detail">{detail}</p>}
+      </div>
       {action && (
         <button className="text-action" onClick={onAction} type="button">
           {action}
