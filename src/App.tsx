@@ -1579,6 +1579,24 @@ function App() {
     )
   }
 
+  const markClientApproved = (bookingId: string) => {
+    const today = toDateKey(new Date())
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              clientApprovedAt: today,
+              beoHistory: [
+                ...(booking.beoHistory ?? []),
+                { id: `HIST-${Date.now()}`, timestamp: today, note: 'Client approved' },
+              ],
+            }
+          : booking,
+      ),
+    )
+  }
+
   const markBeoRevised = (bookingId: string) => {
     setBookings((currentBookings) =>
       currentBookings.map((booking) =>
@@ -1988,6 +2006,7 @@ function App() {
                 appendBeoHistory={appendBeoHistory}
                 booking={beoViewBooking}
                 markBeoRevised={markBeoRevised}
+                markClientApproved={markClientApproved}
                 onBack={() => setBeoViewBookingId(null)}
                 propertyProfile={propertyProfile}
               />
@@ -4221,12 +4240,14 @@ function BeoView({
   appendBeoHistory,
   booking,
   markBeoRevised,
+  markClientApproved,
   onBack,
   propertyProfile,
 }: {
   appendBeoHistory: (bookingId: string, note: string) => void
   booking: EventBooking
   markBeoRevised: (bookingId: string) => void
+  markClientApproved: (bookingId: string) => void
   onBack: () => void
   propertyProfile: PropertyProfile
 }) {
@@ -4295,84 +4316,10 @@ function BeoView({
     ['Service', 'Staffing, guest flow, table service, special instructions'],
     ['Finance', 'Deposit, proforma invoice, final billing controls'],
   ]
+  const [showPdfPreview, setShowPdfPreview] = useState(false)
 
-  return (
-    <div className="page-stack">
-      <button className="text-action back-action no-print" onClick={onBack} type="button">
-        <ChevronLeft size={16} />
-        Back to BEOs
-      </button>
-
-      <section className="document-preview single-document">
-        <div className="document-toolbar no-print">
-          <div>
-            <p className="eyebrow">Banquet Event Order</p>
-            <h2>{booking.beoNumber}</h2>
-          </div>
-          <div className="toolbar-actions">
-            <button
-              className="secondary-action"
-              onClick={() =>
-                shareDocument(
-                  {
-                    title: booking.beoNumber,
-                    text: `${booking.beoNumber} Rev ${booking.revision} — ${booking.eventName}, ${booking.date} at ${booking.venue}.`,
-                  },
-                  () => appendBeoHistory(booking.id, 'Summary copied to clipboard'),
-                )
-              }
-              type="button"
-            >
-              <Send size={16} />
-              Share
-            </button>
-            <button
-              className="secondary-action"
-              onClick={() => {
-                appendBeoHistory(booking.id, 'Printed / exported as PDF')
-                window.print()
-              }}
-              type="button"
-            >
-              <Download size={16} />
-              Print / Save PDF
-            </button>
-            <button
-              className="primary-action"
-              onClick={() => markBeoRevised(booking.id)}
-              type="button"
-            >
-              <RefreshCcw size={16} />
-              Mark revised
-            </button>
-          </div>
-        </div>
-
-        <section className="beo-control-panel no-print">
-          <div className="beo-readiness-head">
-            <div>
-              <p className="eyebrow">Operational readiness</p>
-              <h3>{readyCount}/{readinessItems.length} BEO controls complete</h3>
-            </div>
-            <strong>{readinessPercent}%</strong>
-          </div>
-          <div className="progress-track">
-            <span style={{ width: `${readinessPercent}%` }} />
-          </div>
-          <div className="beo-readiness-grid">
-            {readinessItems.map((item) => (
-              <div className={item.ready ? 'readiness-item ready' : 'readiness-item'} key={item.label}>
-                <CheckCircle2 size={16} />
-                <div>
-                  <strong>{item.label}</strong>
-                  <span>{item.detail}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <div className="paper print-doc">
+  const paperDocument = (
+    <div className="paper print-doc">
           <div className="paper-head">
             <div>
               <span>EventPilot</span>
@@ -4465,6 +4412,11 @@ function BeoView({
             <div className="signatory-column">
               <strong>{booking.account}</strong>
               <small>Client approval — {booking.contact}</small>
+              {booking.clientApprovedAt && (
+                <small className="approval-status">
+                  ✓ Approved {booking.clientApprovedAt}
+                </small>
+              )}
             </div>
             <div className="signatory-column">
               <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
@@ -4477,7 +4429,149 @@ function BeoView({
               <small>Finance approval — {propertyProfile.signatoryTitle || 'Finance'}</small>
             </div>
           </div>
+          {!booking.clientApprovedAt && (
+            <div className="card-actions no-print">
+              <button
+                className="secondary-action"
+                onClick={() => markClientApproved(booking.id)}
+                type="button"
+              >
+                <CheckCircle2 size={16} />
+                Mark client approved
+              </button>
+            </div>
+          )}
+    </div>
+  )
+
+  if (showPdfPreview) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={() => setShowPdfPreview(false)}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back
+        </button>
+
+        <section className="document-preview single-document">
+          <div className="document-toolbar no-print">
+            <div>
+              <p className="eyebrow">Banquet Event Order</p>
+              <h2>{booking.beoNumber}</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button
+                className="secondary-action"
+                onClick={() =>
+                  shareDocument(
+                    {
+                      title: booking.beoNumber,
+                      text: `${booking.beoNumber} Rev ${booking.revision} — ${booking.eventName}, ${booking.date} at ${booking.venue}.`,
+                    },
+                    () => appendBeoHistory(booking.id, 'Summary copied to clipboard'),
+                  )
+                }
+                type="button"
+              >
+                <Send size={16} />
+                Share
+              </button>
+              <button
+                className="primary-action"
+                onClick={() => {
+                  appendBeoHistory(booking.id, 'Printed / exported as PDF')
+                  window.print()
+                }}
+                type="button"
+              >
+                <Download size={16} />
+                Print
+              </button>
+            </div>
+          </div>
+          {paperDocument}
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to BEOs
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">Banquet Event Order</p>
+            <h2>{booking.beoNumber}</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button
+              className="secondary-action"
+              onClick={() =>
+                shareDocument(
+                  {
+                    title: booking.beoNumber,
+                    text: `${booking.beoNumber} Rev ${booking.revision} — ${booking.eventName}, ${booking.date} at ${booking.venue}.`,
+                  },
+                  () => appendBeoHistory(booking.id, 'Summary copied to clipboard'),
+                )
+              }
+              type="button"
+            >
+              <Send size={16} />
+              Share
+            </button>
+            <button
+              className="secondary-action"
+              onClick={() => setShowPdfPreview(true)}
+              type="button"
+            >
+              <Download size={16} />
+              View PDF
+            </button>
+            <button
+              className="primary-action"
+              onClick={() => markBeoRevised(booking.id)}
+              type="button"
+            >
+              <RefreshCcw size={16} />
+              Mark revised
+            </button>
+          </div>
         </div>
+
+        <section className="beo-control-panel no-print">
+          <div className="beo-readiness-head">
+            <div>
+              <p className="eyebrow">Operational readiness</p>
+              <h3>{readyCount}/{readinessItems.length} BEO controls complete</h3>
+            </div>
+            <strong>{readinessPercent}%</strong>
+          </div>
+          <div className="progress-track">
+            <span style={{ width: `${readinessPercent}%` }} />
+          </div>
+          <div className="beo-readiness-grid">
+            {readinessItems.map((item) => (
+              <div className={item.ready ? 'readiness-item ready' : 'readiness-item'} key={item.label}>
+                <CheckCircle2 size={16} />
+                <div>
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {paperDocument}
       </section>
 
       <section className="panel no-print">
@@ -4805,65 +4899,19 @@ function DocumentsView({
     }
     setIsEditing((current) => !current)
   }
+  const [showPdfPreview, setShowPdfPreview] = useState(false)
 
-  return (
-    <div className="page-stack">
-      <button className="text-action back-action no-print" onClick={onBack} type="button">
-        <ChevronLeft size={16} />
-        Back to {documentType}
-      </button>
+  const shareWithClient = () =>
+    shareDocument(
+      {
+        title: `${booking.eventName} — ${documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}`,
+        text: `${booking.account}: ${money(total)} total for ${booking.eventName} on ${booking.date}.`,
+      },
+      () => appendDocumentHistory(booking.id, 'Summary copied to clipboard'),
+    )
 
-      <section className="document-preview single-document">
-      <div className="document-toolbar no-print">
-        <div>
-          <p className="eyebrow">{documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}</p>
-          <h2>{booking.eventName}</h2>
-        </div>
-        <div className="toolbar-actions">
-          <button className="secondary-action" onClick={onOpenBeo} type="button">
-            <ClipboardList size={16} />
-            Open BEO
-          </button>
-          {canEdit && (
-            <button
-              className={isEditing ? 'secondary-action' : 'primary-action'}
-              onClick={handleToggleEdit}
-              type="button"
-            >
-              {isEditing ? 'Done editing' : 'Edit line items'}
-            </button>
-          )}
-          <button
-            className="secondary-action"
-            onClick={() =>
-              shareDocument(
-                {
-                  title: `${booking.eventName} — ${documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}`,
-                  text: `${booking.account}: ${money(total)} total for ${booking.eventName} on ${booking.date}.`,
-                },
-                () => appendDocumentHistory(booking.id, 'Summary copied to clipboard'),
-              )
-            }
-            type="button"
-          >
-            <Send size={16} />
-            Send to client
-          </button>
-          <button
-            className="primary-action"
-            onClick={() => {
-              appendDocumentHistory(booking.id, 'Printed / exported as PDF')
-              window.print()
-            }}
-            type="button"
-          >
-            <Download size={16} />
-            Print / Save PDF
-          </button>
-        </div>
-      </div>
-
-      <div className="paper print-doc">
+  const paperDocument = (
+    <div className="paper print-doc">
         <div className="paper-head">
           <div>
             <span>EventPilot</span>
@@ -4945,7 +4993,96 @@ function DocumentsView({
             <small>Client acceptance — {booking.contact}</small>
           </div>
         </div>
+    </div>
+  )
+
+  if (showPdfPreview) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={() => setShowPdfPreview(false)}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back
+        </button>
+
+        <section className="document-preview single-document">
+          <div className="document-toolbar no-print">
+            <div>
+              <p className="eyebrow">
+                {documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}
+              </p>
+              <h2>{booking.eventName}</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button className="secondary-action" onClick={shareWithClient} type="button">
+                <Send size={16} />
+                Share
+              </button>
+              <button
+                className="primary-action"
+                onClick={() => {
+                  appendDocumentHistory(booking.id, 'Printed / exported as PDF')
+                  window.print()
+                }}
+                type="button"
+              >
+                <Download size={16} />
+                Print
+              </button>
+            </div>
+          </div>
+          {paperDocument}
+        </section>
       </div>
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to {documentType}
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">{documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}</p>
+            <h2>{booking.eventName}</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button className="secondary-action" onClick={onOpenBeo} type="button">
+              <ClipboardList size={16} />
+              Open BEO
+            </button>
+            {canEdit && (
+              <button
+                className={isEditing ? 'secondary-action' : 'primary-action'}
+                onClick={handleToggleEdit}
+                type="button"
+              >
+                {isEditing ? 'Done editing' : 'Edit line items'}
+              </button>
+            )}
+            <button className="secondary-action" onClick={shareWithClient} type="button">
+              <Send size={16} />
+              Send to client
+            </button>
+            <button
+              className="secondary-action"
+              onClick={() => setShowPdfPreview(true)}
+              type="button"
+            >
+              <Download size={16} />
+              View PDF
+            </button>
+          </div>
+        </div>
+
+        {paperDocument}
       </section>
 
       <section className="panel no-print">

@@ -74,6 +74,7 @@ export type EventBooking = {
   documentHistory?: HistoryEntry[]
   billingCompany?: string
   paymentMethod?: string
+  clientApprovedAt?: string
 }
 
 export type Account = {
