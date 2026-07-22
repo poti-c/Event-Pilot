@@ -912,10 +912,19 @@ type NewBookingFormState = {
   forecastRevenue: string
   depositDue: string
   nextAction: string
-  menu: string
+  appetizer: string
+  soup: string
+  mainCourse: string
+  dessert: string
+  beverage: string
+  dietaryNotes: string
+  housekeeping: string
   av: string
   staffing: string
+  frontOffice: string
   vendors: string
+  billingCompany: string
+  paymentMethod: string
   specialRequests: string
   clientNotes: string
   internalNotes: string
@@ -945,10 +954,19 @@ function getNewBookingDefaults(): NewBookingFormState {
     forecastRevenue: '',
     depositDue: '',
     nextAction: 'Qualify requirements and send proposal',
-    menu: '',
+    appetizer: '',
+    soup: '',
+    mainCourse: '',
+    dessert: '',
+    beverage: '',
+    dietaryNotes: '',
+    housekeeping: '',
     av: '',
     staffing: '',
+    frontOffice: '',
     vendors: '',
+    billingCompany: '',
+    paymentMethod: '',
     specialRequests: '',
     clientNotes: '',
     internalNotes: '',
@@ -1952,6 +1970,10 @@ function App() {
             <BookingsView
               account={loginSession}
               bookings={filteredBookings}
+              onViewBeo={(bookingId) => {
+                setActiveModule('BEOs')
+                setBeoViewBookingId(bookingId)
+              }}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
               setStatusFilter={setStatusFilter}
@@ -2582,11 +2604,27 @@ function NewBookingView({
       leadSource: form.leadSource.trim(),
       layout: form.layout.trim(),
       packageName: form.packageName.trim(),
-      menu: splitList(form.menu),
+      // Each food/operations field maps onto one of the BEO's existing tag-list
+      // sections; the category prefix keeps that mapping visible on the
+      // printed document instead of collapsing into one undifferentiated list.
+      menu: [
+        ...splitList(form.appetizer).map((item) => `Appetizer: ${item}`),
+        ...splitList(form.soup).map((item) => `Soup: ${item}`),
+        ...splitList(form.mainCourse).map((item) => `Main course: ${item}`),
+        ...splitList(form.dessert).map((item) => `Dessert: ${item}`),
+        ...splitList(form.beverage).map((item) => `Beverage: ${item}`),
+        ...splitList(form.dietaryNotes).map((item) => `Dietary/allergy: ${item}`),
+      ],
       av: splitList(form.av),
       staffing: splitList(form.staffing),
       vendors: splitList(form.vendors),
-      specialRequests: splitList(form.specialRequests),
+      specialRequests: [
+        ...splitList(form.housekeeping).map((item) => `Housekeeping/decoration: ${item}`),
+        ...splitList(form.frontOffice).map((item) => `Front office: ${item}`),
+        ...splitList(form.specialRequests),
+      ],
+      billingCompany: form.billingCompany.trim(),
+      paymentMethod: form.paymentMethod.trim(),
       internalNotes: form.internalNotes.trim(),
       clientNotes: form.clientNotes.trim(),
       beoNumber: `BEO-DRAFT-${id.replace('BKG-', '')}`,
@@ -2712,7 +2750,7 @@ function NewBookingView({
                   value={form.setupTime}
                 />
               </FormField>
-              <FormField label="Breakdown time">
+              <FormField label="Teardown time">
                 <input
                   onChange={(event) => updateField('breakdownTime', event.target.value)}
                   type="time"
@@ -2836,27 +2874,93 @@ function NewBookingView({
           </fieldset>
 
           <fieldset className="panel form-section">
-            <legend>BEO and operations notes</legend>
+            <legend>Food &amp; beverage</legend>
+            <p className="panel-header-detail">
+              One field per course — each becomes a labeled item in the BEO's Food and
+              beverage list, so the kitchen sees which course it belongs to.
+            </p>
             <div className="form-grid form-grid-textareas">
-              <FormField label="Menu / F&B items">
+              <FormField label="Appetizer">
                 <textarea
-                  onChange={(event) => updateField('menu', event.target.value)}
+                  onChange={(event) => updateField('appetizer', event.target.value)}
                   placeholder="Separate items with commas or new lines"
-                  value={form.menu}
+                  value={form.appetizer}
                 />
               </FormField>
-              <FormField label="AV / technical">
+              <FormField label="Soup">
+                <textarea
+                  onChange={(event) => updateField('soup', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.soup}
+                />
+              </FormField>
+              <FormField label="Main course">
+                <textarea
+                  onChange={(event) => updateField('mainCourse', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.mainCourse}
+                />
+              </FormField>
+              <FormField label="Dessert">
+                <textarea
+                  onChange={(event) => updateField('dessert', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.dessert}
+                />
+              </FormField>
+              <FormField label="Beverage">
+                <textarea
+                  onChange={(event) => updateField('beverage', event.target.value)}
+                  placeholder="Separate items with commas or new lines"
+                  value={form.beverage}
+                />
+              </FormField>
+              <FormField
+                hint="Also merged into the Food and beverage list, tagged so the kitchen can flag it."
+                label="Food allergy / dietary notes"
+              >
+                <textarea
+                  onChange={(event) => updateField('dietaryNotes', event.target.value)}
+                  placeholder="No pork, nut allergy at table 4, vegetarian x12..."
+                  value={form.dietaryNotes}
+                />
+              </FormField>
+            </div>
+          </fieldset>
+
+          <fieldset className="panel form-section">
+            <legend>Operations &amp; departments</legend>
+            <p className="panel-header-detail">
+              One field per department. Housekeeping/decoration and Front office feed the
+              BEO's Special instructions list; the rest feed their own named section.
+            </p>
+            <div className="form-grid form-grid-textareas">
+              <FormField label="Housekeeping / decoration">
+                <textarea
+                  onChange={(event) => updateField('housekeeping', event.target.value)}
+                  placeholder="Fresh floral centerpieces, linen color, staging..."
+                  value={form.housekeeping}
+                />
+              </FormField>
+              <FormField label="Audio visual / engineer">
                 <textarea
                   onChange={(event) => updateField('av', event.target.value)}
                   placeholder="Microphones, screen, lighting, technician..."
                   value={form.av}
                 />
               </FormField>
-              <FormField label="Staffing">
+              <FormField hint="Banquet captain, servers, FB/BQ execution notes." label="Staffing / FB-BQ">
                 <textarea
                   onChange={(event) => updateField('staffing', event.target.value)}
                   placeholder="Banquet captain, servers, AV tech..."
                   value={form.staffing}
+                />
+              </FormField>
+              <FormField label="Front office">
+                <textarea
+                  onChange={(event) => updateField('frontOffice', event.target.value)}
+                  placeholder="VIP check-in, registration desk, guest list handling..."
+                  value={form.frontOffice}
                 />
               </FormField>
               <FormField label="External vendors">
@@ -2866,10 +2970,36 @@ function NewBookingView({
                   value={form.vendors}
                 />
               </FormField>
+            </div>
+          </fieldset>
+
+          <fieldset className="panel form-section">
+            <legend>Billing instructions</legend>
+            <div className="form-grid">
+              <FormField hint="e.g. Master Account, direct bill to client, third-party sponsor." label="Billing to company">
+                <input
+                  onChange={(event) => updateField('billingCompany', event.target.value)}
+                  placeholder="Master Account"
+                  value={form.billingCompany}
+                />
+              </FormField>
+              <FormField hint="e.g. credit card on file, bank transfer, cash on departure." label="Payment method">
+                <input
+                  onChange={(event) => updateField('paymentMethod', event.target.value)}
+                  placeholder="Bank transfer"
+                  value={form.paymentMethod}
+                />
+              </FormField>
+            </div>
+          </fieldset>
+
+          <fieldset className="panel form-section">
+            <legend>Special instructions &amp; notes</legend>
+            <div className="form-grid form-grid-textareas">
               <FormField label="Special client instructions">
                 <textarea
                   onChange={(event) => updateField('specialRequests', event.target.value)}
-                  placeholder="Dietary needs, VIP handling, access notes..."
+                  placeholder="VIP handling, access notes..."
                   value={form.specialRequests}
                 />
               </FormField>
@@ -3829,6 +3959,7 @@ function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
 function BookingsView({
   account,
   bookings,
+  onViewBeo,
   selectedBookingId,
   setSelectedBookingId,
   setStatusFilter,
@@ -3837,6 +3968,7 @@ function BookingsView({
 }: {
   account: LoginSession
   bookings: EventBooking[]
+  onViewBeo: (bookingId: string) => void
   selectedBookingId?: string
   setSelectedBookingId: (id: string) => void
   setStatusFilter: (status: BookingStatus | 'All') => void
@@ -3942,6 +4074,16 @@ function BookingsView({
                 <li key={request}>{request}</li>
               ))}
             </ul>
+          </div>
+          <div className="card-actions full-width view-beo-action">
+            <button
+              className="secondary-action full-width"
+              onClick={() => onViewBeo(selectedBooking.id)}
+              type="button"
+            >
+              <ClipboardList size={17} />
+              View BEO
+            </button>
           </div>
           {(canFallBack || canAdvance) && (
             <div className="status-actions">
@@ -4147,7 +4289,7 @@ function BeoView({
   const readinessPercent = Math.round((readyCount / readinessItems.length) * 100)
   const departmentResponsibilities = [
     ['Sales', 'Contract, client notes, revision approval'],
-    ['Banquet operations', 'Room setup, logistics, vendor access, breakdown'],
+    ['Banquet operations', 'Room setup, logistics, vendor access, teardown'],
     ['Kitchen', 'Menu, guaranteed counts, dietary notes, service timing'],
     ['AV', 'Audio, display, microphones, technical support'],
     ['Service', 'Staffing, guest flow, table service, special instructions'],
@@ -4250,7 +4392,7 @@ function BeoView({
             <Detail label="Date" value={booking.date} />
             <Detail label="Time" value={`${booking.startTime}-${booking.endTime}`} />
             <Detail label="Room" value={`${booking.venue}, ${booking.room}`} />
-            <Detail label="Setup" value={`${booking.setupTime} / Breakdown ${booking.breakdownTime}`} />
+            <Detail label="Setup" value={`${booking.setupTime} / Teardown ${booking.breakdownTime}`} />
             <Detail label="Guests" value={`${booking.guaranteedGuests} guaranteed`} />
             <Detail label="Owner" value={booking.owner} />
           </div>
@@ -4264,7 +4406,7 @@ function BeoView({
               <span>{booking.endTime}</span>
               <p>Event close and client farewell</p>
               <span>{booking.breakdownTime}</span>
-              <p>Breakdown and room reset</p>
+              <p>Teardown and room reset</p>
             </div>
           </PaperSection>
 
@@ -4274,6 +4416,8 @@ function BeoView({
               <Detail label="Payment status" value={booking.paymentStatus} />
               <Detail label="Revision" value={`Rev ${booking.revision}`} />
               <Detail label="Distribution" value="Sales, operations, kitchen, AV, finance" />
+              <Detail label="Billed to" value={booking.billingCompany || booking.account} />
+              <Detail label="Payment method" value={booking.paymentMethod || 'Not specified'} />
             </div>
           </PaperSection>
 
@@ -4281,7 +4425,7 @@ function BeoView({
             <div className="paper-grid compact-paper-grid">
               <Detail label="Layout" value={booking.layout} />
               <Detail label="Setup access" value={booking.setupTime} />
-              <Detail label="Breakdown" value={booking.breakdownTime} />
+              <Detail label="Teardown" value={booking.breakdownTime} />
               <Detail label="Guest count" value={`${booking.guaranteedGuests} guaranteed / ${booking.expectedGuests} expected`} />
             </div>
           </PaperSection>

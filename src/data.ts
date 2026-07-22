@@ -72,6 +72,8 @@ export type EventBooking = {
   discount?: Discount
   beoHistory?: HistoryEntry[]
   documentHistory?: HistoryEntry[]
+  billingCompany?: string
+  paymentMethod?: string
 }
 
 export type Account = {
