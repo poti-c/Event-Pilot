@@ -9,6 +9,27 @@ export type BookingStatus =
 
 export type PaymentStatus = 'Unpaid' | 'Deposit due' | 'Partial' | 'Paid'
 
+export type LineItem = {
+  id: string
+  description: string
+  quantity: number
+  unitPrice: number
+}
+
+export type DiscountMode = 'none' | 'percent' | 'value' | 'promo'
+
+export type Discount = {
+  mode: DiscountMode
+  value: number
+  code?: string
+}
+
+export type HistoryEntry = {
+  id: string
+  timestamp: string
+  note: string
+}
+
 export type EventBooking = {
   id: string
   eventName: string
@@ -47,6 +68,10 @@ export type EventBooking = {
   beoNumber: string
   revision: number
   depositDue: number
+  lineItems?: LineItem[]
+  discount?: Discount
+  beoHistory?: HistoryEntry[]
+  documentHistory?: HistoryEntry[]
 }
 
 export type Account = {
@@ -67,16 +92,23 @@ export type Account = {
   notes: string
 }
 
-export type Opportunity = {
+export type LeadStage = 'New' | 'Contacted' | 'Qualified' | 'Proposal Sent' | 'Won' | 'Lost'
+
+export type Lead = {
   id: string
-  title: string
-  account: string
-  stage: string
+  name: string
+  company: string
+  email: string
+  phone: string
+  source: string
+  category: string
+  stage: LeadStage
+  estimatedValue: number
   owner: string
-  expectedRevenue: number
-  expectedClose: string
-  probability: number
-  nextAction: string
+  lostReason?: string
+  createdAt: string
+  notes: string
+  history: HistoryEntry[]
 }
 
 export type Product = {
@@ -129,6 +161,8 @@ export type PropertyProfile = {
   }
   lineOfficial: string
   logistics: string[]
+  signatoryName: string
+  signatoryTitle: string
   sourcePages: Array<{
     label: string
     url: string
@@ -147,6 +181,8 @@ export const naNirandProfile: PropertyProfile = {
     events: 'sales@nanirand.com',
   },
   lineOfficial: '@nanirandresort',
+  signatoryName: '',
+  signatoryTitle: '',
   logistics: [
     'Next to Wat Chai Mongkhon temple',
     'About 5 minutes from Chiang Mai Night Bazaar',
@@ -202,6 +238,17 @@ export const initialBookings: EventBooking[] = [
     beoNumber: 'BEO-2026-0142',
     revision: 3,
     depositDue: 0,
+    beoHistory: [
+      { id: 'BKG-2401-BH1', timestamp: '2026-05-10', note: 'BEO drafted' },
+      { id: 'BKG-2401-BH2', timestamp: '2026-05-18', note: 'Marked as Rev 1' },
+      { id: 'BKG-2401-BH3', timestamp: '2026-05-27', note: 'Marked as Rev 2' },
+      { id: 'BKG-2401-BH4', timestamp: '2026-06-02', note: 'Marked as Rev 3' },
+    ],
+    documentHistory: [
+      { id: 'BKG-2401-DH1', timestamp: '2026-05-10', note: 'Proposal generated from booking' },
+      { id: 'BKG-2401-DH2', timestamp: '2026-05-12', note: 'Sent to client' },
+      { id: 'BKG-2401-DH3', timestamp: '2026-05-30', note: 'Line items updated' },
+    ],
   },
   {
     id: 'BKG-2402',
@@ -459,61 +506,96 @@ export const accounts: Account[] = [
   },
 ]
 
-export const opportunities: Opportunity[] = [
+export const leads: Lead[] = [
   {
-    id: 'OPP-01',
-    title: 'LannaTech launch deposit',
-    account: 'LannaTech Co.',
-    stage: 'Deposit requested',
+    id: 'LEAD-01',
+    name: 'Kanya S.',
+    company: 'LannaTech Co.',
+    email: 'kanya@lannatech.example',
+    phone: '+66 89 222 0188',
+    source: 'Website inquiry',
+    category: 'Product launch',
+    stage: 'Won',
+    estimatedValue: 418000,
     owner: 'Pim Catering',
-    expectedRevenue: 418000,
-    expectedClose: '2026-06-05',
-    probability: 70,
-    nextAction: 'Send bank transfer reminder',
+    createdAt: '2026-05-20',
+    notes: 'Send bank transfer reminder for deposit.',
+    history: [
+      { id: 'LEAD-01-H1', timestamp: '2026-05-20', note: 'Lead created' },
+      { id: 'LEAD-01-H2', timestamp: '2026-05-21', note: 'Stage changed from New to Contacted' },
+      { id: 'LEAD-01-H3', timestamp: '2026-05-25', note: 'Stage changed from Contacted to Qualified' },
+      { id: 'LEAD-01-H4', timestamp: '2026-05-30', note: 'Stage changed from Qualified to Proposal Sent' },
+      { id: 'LEAD-01-H5', timestamp: '2026-06-05', note: 'Stage changed from Proposal Sent to Won' },
+    ],
   },
   {
-    id: 'OPP-02',
-    title: 'Royal Orchid revised package',
-    account: 'Wongthanakit Family',
-    stage: 'Negotiation',
+    id: 'LEAD-02',
+    name: 'Mintra W.',
+    company: 'Wongthanakit Family',
+    email: '',
+    phone: '',
+    source: 'Planner referral',
+    category: 'Wedding',
+    stage: 'Proposal Sent',
+    estimatedValue: 615000,
     owner: 'Pim Catering',
-    expectedRevenue: 615000,
-    expectedClose: '2026-06-07',
-    probability: 55,
-    nextAction: 'Send floral option comparison',
+    createdAt: '2026-05-22',
+    notes: 'Send floral option comparison.',
+    history: [
+      { id: 'LEAD-02-H1', timestamp: '2026-05-22', note: 'Lead created' },
+      { id: 'LEAD-02-H2', timestamp: '2026-05-24', note: 'Stage changed from New to Contacted' },
+      { id: 'LEAD-02-H3', timestamp: '2026-05-29', note: 'Stage changed from Contacted to Qualified' },
+      { id: 'LEAD-02-H4', timestamp: '2026-06-02', note: 'Stage changed from Qualified to Proposal Sent' },
+    ],
   },
   {
-    id: 'OPP-03',
-    title: 'Aviation board retreat',
-    account: 'Aviation Partners Asia',
-    stage: 'New inquiry',
+    id: 'LEAD-03',
+    name: 'Leon C.',
+    company: 'Aviation Partners Asia',
+    email: '',
+    phone: '',
+    source: 'Phone inquiry',
+    category: 'Board meeting',
+    stage: 'New',
+    estimatedValue: 88000,
     owner: 'Maya Sales',
-    expectedRevenue: 88000,
-    expectedClose: '2026-06-09',
-    probability: 30,
-    nextAction: 'Call executive assistant',
+    createdAt: '2026-05-28',
+    notes: 'Call executive assistant.',
+    history: [{ id: 'LEAD-03-H1', timestamp: '2026-05-28', note: 'Lead created' }],
   },
   {
-    id: 'OPP-04',
-    title: 'Siam Retail Q3 townhall',
-    account: 'Siam Retail Group',
-    stage: 'Site inspection scheduled',
+    id: 'LEAD-04',
+    name: 'Narin V.',
+    company: 'Siam Retail Group',
+    email: 'narin@siamretail.example',
+    phone: '+66 81 555 0142',
+    source: 'Repeat corporate account',
+    category: 'Corporate',
+    stage: 'Qualified',
+    estimatedValue: 520000,
     owner: 'Tan Sales',
-    expectedRevenue: 520000,
-    expectedClose: '2026-06-18',
-    probability: 45,
-    nextAction: 'Prepare ballroom split proposal',
+    createdAt: '2026-05-15',
+    notes: 'Prepare ballroom split proposal for Q3 townhall.',
+    history: [
+      { id: 'LEAD-04-H1', timestamp: '2026-05-15', note: 'Lead created' },
+      { id: 'LEAD-04-H2', timestamp: '2026-05-18', note: 'Stage changed from New to Contacted' },
+      { id: 'LEAD-04-H3', timestamp: '2026-05-26', note: 'Stage changed from Contacted to Qualified' },
+    ],
   },
   {
-    id: 'OPP-05',
-    title: 'Na Nirand wedding inquiry',
-    account: 'Private Couple Inquiry',
-    stage: 'New website lead',
+    id: 'LEAD-05',
+    name: 'Website wedding lead',
+    company: 'Private Couple Inquiry',
+    email: '',
+    phone: '',
+    source: 'Na Nirand website events inquiry',
+    category: 'Wedding',
+    stage: 'New',
+    estimatedValue: 280000,
     owner: 'Pim Catering',
-    expectedRevenue: 280000,
-    expectedClose: '2026-06-08',
-    probability: 35,
-    nextAction: 'Send wedding package, venue options, and consultation times',
+    createdAt: '2026-06-01',
+    notes: 'Send wedding package, venue options, and consultation times.',
+    history: [{ id: 'LEAD-05-H1', timestamp: '2026-06-01', note: 'Lead created' }],
   },
 ]
 
@@ -806,8 +888,8 @@ export const tasks: Task[] = [
 ]
 
 // Authority tiers, aligned with the three-tier login model
-// (top_management / manager / staff). Descriptions only for now — access is
-// not yet enforced per tier.
+// (top_management / manager / staff). These descriptions are enforced by the
+// `hasPermission`/`PERMISSIONS` table in App.tsx — keep both in sync.
 export const rolePermissions = [
   [
     'Top Management',

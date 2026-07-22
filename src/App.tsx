@@ -18,6 +18,8 @@ import {
   FileText,
   Filter,
   LayoutDashboard,
+  LayoutGrid,
+  List,
   LogOut,
   MapPinned,
   Plus,
@@ -48,9 +50,9 @@ import type { ConsoleSession } from './consoleClient'
 import {
   accounts,
   initialBookings,
+  leads as initialLeads,
   naNirandProfile,
-  opportunities,
-  products,
+  products as initialProducts,
   rolePermissions,
   tasks,
   venues,
@@ -58,8 +60,14 @@ import {
 import type {
   Account,
   BookingStatus,
+  Discount,
+  DiscountMode,
   EventBooking,
+  Lead,
+  LeadStage,
+  LineItem,
   PaymentStatus,
+  Product,
   PropertyProfile,
 } from './data'
 
@@ -102,6 +110,23 @@ const navItems: NavItem[] = [
   { id: 'Settings', label: 'Settings', icon: Settings },
 ]
 
+const NAV_ACTION: Partial<Record<ModuleId, Action>> = {
+  Leads: 'nav:Leads',
+  CRM: 'nav:CRM',
+  Proposals: 'nav:Proposals',
+  Invoices: 'nav:Invoices',
+  Packages: 'nav:Packages',
+  Venues: 'nav:Venues',
+  Reports: 'nav:Reports',
+}
+
+function visibleNavItems(role: AuthRole): NavItem[] {
+  return navItems.filter((item) => {
+    const action = NAV_ACTION[item.id]
+    return !action || hasPermission(role, action)
+  })
+}
+
 const moduleIds: ModuleId[] = [
   ...navItems.map((item) => item.id),
   'Login',
@@ -118,6 +143,17 @@ function getModuleFromHash(): ModuleId {
 function moduleTitle(module: ModuleId) {
   if (module === 'Login') return 'Login'
   return module === 'NewBooking' ? 'New booking' : module
+}
+
+const LEAD_STAGES: LeadStage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost']
+
+const LEAD_STAGE_PROBABILITY: Record<LeadStage, number> = {
+  New: 10,
+  Contacted: 25,
+  Qualified: 45,
+  'Proposal Sent': 65,
+  Won: 100,
+  Lost: 0,
 }
 
 const statusOrder: BookingStatus[] = [
@@ -570,6 +606,79 @@ function priceLabel(value: number | null) {
   return value === null ? 'Quote required' : money(value)
 }
 
+// Existing bookings have no lineItems yet — derive a sensible starting point
+// from their package/menu/AV/staffing tags so proposals/invoices never render
+// blank until someone edits them.
+function deriveLineItemsFromBooking(booking: EventBooking): LineItem[] {
+  const tags = [
+    ...(booking.packageName ? [booking.packageName] : []),
+    ...booking.menu,
+    ...booking.av,
+    ...booking.staffing,
+  ]
+  if (!tags.length) {
+    return [
+      {
+        id: `${booking.id}-derived`,
+        description: booking.eventName,
+        quantity: 1,
+        unitPrice: booking.forecastRevenue,
+      },
+    ]
+  }
+  const perItem = booking.forecastRevenue / tags.length
+  return tags.map((tag, index) => ({
+    id: `${booking.id}-derived-${index}`,
+    description: tag,
+    quantity: 1,
+    unitPrice: Math.round(perItem),
+  }))
+}
+
+function getLineItems(booking: EventBooking): LineItem[] {
+  return booking.lineItems && booking.lineItems.length
+    ? booking.lineItems
+    : deriveLineItemsFromBooking(booking)
+}
+
+function getDiscount(booking: EventBooking): Discount {
+  return booking.discount ?? { mode: 'none', value: 0 }
+}
+
+// Uses the real Web Share API where the browser supports it; otherwise copies
+// the summary to the clipboard so the action still does something real
+// rather than just logging a fake local activity entry.
+async function shareDocument(
+  payload: { title: string; text: string },
+  onCopied: () => void,
+) {
+  if (navigator.share) {
+    try {
+      await navigator.share(payload)
+      return
+    } catch {
+      // User cancelled the native share sheet — nothing further to do.
+      return
+    }
+  }
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(`${payload.title}\n${payload.text}`)
+    onCopied()
+  }
+}
+
+function discountAmount(subtotal: number, discount: Discount): number {
+  switch (discount.mode) {
+    case 'percent':
+      return subtotal * (discount.value / 100)
+    case 'value':
+    case 'promo':
+      return Math.min(discount.value, subtotal)
+    default:
+      return 0
+  }
+}
+
 function capacityLabel(value: number | null) {
   return value === null ? 'TBC' : value.toString()
 }
@@ -608,6 +717,121 @@ function offsetMonth(value: string, offset: number) {
   const date = monthKeyToDate(value)
   date.setMonth(date.getMonth() + offset)
   return toMonthKey(date)
+}
+
+function monthLabel(monthKey: string) {
+  return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(
+    monthKeyToDate(monthKey),
+  )
+}
+
+function uniqueSorted(values: string[]) {
+  return [...new Set(values)].sort()
+}
+
+function availableMonthsOf<T>(items: T[], getDate: (item: T) => string) {
+  return uniqueSorted(items.map((item) => toMonthKey(toLocalDate(getDate(item)))))
+}
+
+function availableYearsOf<T>(items: T[], getDate: (item: T) => string) {
+  return uniqueSorted(items.map((item) => getDate(item).slice(0, 4)))
+}
+
+type ListViewMode = 'grid' | 'list'
+type TimeFilterMode = 'All' | 'Month' | 'Year'
+
+function filterAndSortByTime<T>(
+  items: T[],
+  getDate: (item: T) => string,
+  timeFilter: TimeFilterMode,
+  selectedMonth: string,
+  selectedYear: string,
+) {
+  const filtered = items.filter((item) => {
+    if (timeFilter === 'Month') return toMonthKey(toLocalDate(getDate(item))) === selectedMonth
+    if (timeFilter === 'Year') return getDate(item).slice(0, 4) === selectedYear
+    return true
+  })
+  return [...filtered].sort((first, second) => getDate(first).localeCompare(getDate(second)))
+}
+
+function ListViewControls({
+  availableMonths,
+  availableYears,
+  selectedMonth,
+  selectedYear,
+  setSelectedMonth,
+  setSelectedYear,
+  setTimeFilter,
+  setViewMode,
+  timeFilter,
+  viewMode,
+}: {
+  availableMonths: string[]
+  availableYears: string[]
+  selectedMonth: string
+  selectedYear: string
+  setSelectedMonth: (month: string) => void
+  setSelectedYear: (year: string) => void
+  setTimeFilter: (mode: TimeFilterMode) => void
+  setViewMode: (mode: ListViewMode) => void
+  timeFilter: TimeFilterMode
+  viewMode: ListViewMode
+}) {
+  return (
+    <div className="list-controls">
+      <div className="segmented-control">
+        {(['All', 'Month', 'Year'] as TimeFilterMode[]).map((mode) => (
+          <button
+            className={timeFilter === mode ? 'segment active' : 'segment'}
+            key={mode}
+            onClick={() => setTimeFilter(mode)}
+            type="button"
+          >
+            {mode === 'All' ? 'Display all' : mode}
+          </button>
+        ))}
+        {timeFilter === 'Month' && (
+          <select onChange={(event) => setSelectedMonth(event.target.value)} value={selectedMonth}>
+            {availableMonths.map((month) => (
+              <option key={month} value={month}>
+                {monthLabel(month)}
+              </option>
+            ))}
+          </select>
+        )}
+        {timeFilter === 'Year' && (
+          <select onChange={(event) => setSelectedYear(event.target.value)} value={selectedYear}>
+            {availableYears.map((year) => (
+              <option key={year} value={year}>
+                {year}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      <div className="view-toggle">
+        <button
+          aria-label="Grid view"
+          aria-pressed={viewMode === 'grid'}
+          className={viewMode === 'grid' ? 'icon-toggle active' : 'icon-toggle'}
+          onClick={() => setViewMode('grid')}
+          type="button"
+        >
+          <LayoutGrid size={16} />
+        </button>
+        <button
+          aria-label="List view"
+          aria-pressed={viewMode === 'list'}
+          className={viewMode === 'list' ? 'icon-toggle active' : 'icon-toggle'}
+          onClick={() => setViewMode('list')}
+          type="button"
+        >
+          <List size={16} />
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function statusClass(status: string) {
@@ -804,6 +1028,64 @@ const ROLE_LABELS: Record<AuthRole, { en: string; th: string }> = {
   top_management: { en: 'Top Management', th: 'ผู้บริหารระดับสูง' },
   manager: { en: 'Managers', th: 'ผู้จัดการ' },
   staff: { en: 'Staff', th: 'พนักงาน' },
+}
+
+/**
+ * Single source of truth for tier-based access, mirroring the descriptions in
+ * `rolePermissions` (data.ts): Top Management has full access; Managers cover
+ * day-to-day operations but not admin/billing/user management; Staff get
+ * assigned-work views only (no create/delete, no admin, no packages edit).
+ */
+type Action =
+  | 'nav:Leads'
+  | 'nav:CRM'
+  | 'nav:Proposals'
+  | 'nav:Invoices'
+  | 'nav:Packages'
+  | 'nav:Venues'
+  | 'nav:Reports'
+  | 'booking:create'
+  | 'booking:advanceStatus'
+  | 'booking:fallBackStatus'
+  | 'packages:edit'
+  | 'leads:create'
+  | 'leads:edit'
+  | 'leads:delete'
+  | 'proposal:edit'
+  | 'admin:settings'
+  | 'admin:userManagement'
+
+const STAFF_ACTIONS: Action[] = ['booking:advanceStatus']
+const MANAGER_ONLY_ADDITIONS: Action[] = [
+  'nav:Leads',
+  'nav:CRM',
+  'nav:Proposals',
+  'nav:Invoices',
+  'nav:Packages',
+  'nav:Venues',
+  'nav:Reports',
+  'booking:create',
+  'booking:advanceStatus',
+  'booking:fallBackStatus',
+  'leads:create',
+  'leads:edit',
+  'leads:delete',
+  'proposal:edit',
+]
+const TOP_MANAGEMENT_ONLY_ADDITIONS: Action[] = ['packages:edit', 'admin:settings', 'admin:userManagement']
+
+const PERMISSIONS: Record<AuthRole, Set<Action>> = {
+  staff: new Set(STAFF_ACTIONS),
+  manager: new Set([...STAFF_ACTIONS, ...MANAGER_ONLY_ADDITIONS]),
+  top_management: new Set([
+    ...STAFF_ACTIONS,
+    ...MANAGER_ONLY_ADDITIONS,
+    ...TOP_MANAGEMENT_ONLY_ADDITIONS,
+  ]),
+}
+
+function hasPermission(role: AuthRole, action: Action): boolean {
+  return PERMISSIONS[role].has(action)
 }
 
 // Staff sign in with a username scoped to their workspace code; the auth email is
@@ -1017,7 +1299,21 @@ function App() {
     naNirandProfile,
     userId,
   )
+  const [leads, setLeads] = useSyncedState(
+    'eventpilot.leads.v1',
+    initialLeads,
+    userId,
+  )
+  const [products, setProducts] = useSyncedState(
+    'eventpilot.products.v1',
+    initialProducts,
+    userId,
+  )
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
+  // null = show the list; a booking id = show that document's detail with a back button.
+  const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
+  const [proposalViewBookingId, setProposalViewBookingId] = useState<string | null>(null)
+  const [invoiceViewBookingId, setInvoiceViewBookingId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -1088,6 +1384,9 @@ function App() {
 
   const selectedBooking =
     bookings.find((booking) => booking.id === selectedBookingId) ?? bookings[0]
+  const beoViewBooking = bookings.find((booking) => booking.id === beoViewBookingId)
+  const proposalViewBooking = bookings.find((booking) => booking.id === proposalViewBookingId)
+  const invoiceViewBooking = bookings.find((booking) => booking.id === invoiceViewBookingId)
 
   const filteredBookings = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -1126,8 +1425,9 @@ function App() {
         : sum + booking.forecastRevenue,
     0,
   )
-  const pipelineRevenue = opportunities.reduce(
-    (sum, opportunity) => sum + opportunity.expectedRevenue,
+  const openLeads = leads.filter((lead) => lead.stage !== 'Won' && lead.stage !== 'Lost')
+  const pipelineRevenue = openLeads.reduce(
+    (sum, lead) => sum + lead.estimatedValue,
     0,
   )
   const overdueFollowUps = bookings.filter((booking) =>
@@ -1229,11 +1529,54 @@ function App() {
     }
   }
 
+  const appendBeoHistory = (bookingId: string, note: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              beoHistory: [
+                ...(booking.beoHistory ?? []),
+                { id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note },
+              ],
+            }
+          : booking,
+      ),
+    )
+  }
+
+  const appendDocumentHistory = (bookingId: string, note: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              documentHistory: [
+                ...(booking.documentHistory ?? []),
+                { id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note },
+              ],
+            }
+          : booking,
+      ),
+    )
+  }
+
   const markBeoRevised = (bookingId: string) => {
     setBookings((currentBookings) =>
       currentBookings.map((booking) =>
         booking.id === bookingId
-          ? { ...booking, revision: booking.revision + 1 }
+          ? {
+              ...booking,
+              revision: booking.revision + 1,
+              beoHistory: [
+                ...(booking.beoHistory ?? []),
+                {
+                  id: `HIST-${Date.now()}`,
+                  timestamp: toDateKey(new Date()),
+                  note: `Marked as Rev ${booking.revision + 1}`,
+                },
+              ],
+            }
           : booking,
       ),
     )
@@ -1244,6 +1587,18 @@ function App() {
         `${booking.beoNumber} moved to Rev ${booking.revision + 1}.`,
       )
     }
+  }
+
+  const updateBookingLineItems = (
+    bookingId: string,
+    lineItems: LineItem[],
+    discount: Discount,
+  ) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId ? { ...booking, lineItems, discount } : booking,
+      ),
+    )
   }
 
   const createBooking = (booking: EventBooking) => {
@@ -1363,6 +1718,16 @@ function App() {
     return null
   }
 
+  // Nav clicks always land on a module's list (not whatever document was last
+  // open) — a specific document is only opened via an explicit deep link
+  // (e.g. "Open BEO" from a proposal), which sets the view-booking-id itself.
+  const openModule = (id: ModuleId) => {
+    setActiveModule(id)
+    if (id === 'BEOs') setBeoViewBookingId(null)
+    if (id === 'Proposals') setProposalViewBookingId(null)
+    if (id === 'Invoices') setInvoiceViewBookingId(null)
+  }
+
   const handleLogout = async () => {
     if (isSupabaseEnabled && supabase) {
       await supabase.auth.signOut()
@@ -1414,7 +1779,7 @@ function App() {
 
   return (
     <div className="platform-shell">
-      <aside className="sidebar" aria-label="Main navigation">
+      <aside className="sidebar no-print" aria-label="Main navigation">
         <div className="brand-block">
           <div className="brand-mark">
             <img alt="" src="/brand/eventpilot-command-icon.svg" />
@@ -1426,13 +1791,13 @@ function App() {
         </div>
 
         <nav className="nav-list">
-          {navItems.map((item) => {
+          {visibleNavItems(loginSession.role).map((item) => {
             const Icon = item.icon
             return (
               <button
                 className={activeModule === item.id ? 'nav-item active' : 'nav-item'}
                 key={item.id}
-                onClick={() => setActiveModule(item.id)}
+                onClick={() => openModule(item.id)}
                 aria-current={activeModule === item.id ? 'page' : undefined}
                 type="button"
               >
@@ -1467,7 +1832,7 @@ function App() {
       </aside>
 
       <div className="workbench">
-        <header className="topbar">
+        <header className="topbar no-print">
           <div>
             <p className="eyebrow">Venue CRM, BEO, booking, and operations</p>
             <h1>{moduleTitle(activeModule)}</h1>
@@ -1494,14 +1859,16 @@ function App() {
               <Bell size={18} />
               {notificationItems.length > 0 && <span>{notificationItems.length}</span>}
             </button>
-            <a
-              className="primary-action"
-              href="#NewBooking"
-              onClick={() => setActiveModule('NewBooking')}
-            >
-              <Plus size={17} />
-              New booking
-            </a>
+            {hasPermission(loginSession.role, 'booking:create') && (
+              <a
+                className="primary-action"
+                href="#NewBooking"
+                onClick={() => setActiveModule('NewBooking')}
+              >
+                <Plus size={17} />
+                New booking
+              </a>
+            )}
           </div>
           {notificationsOpen && (
             <section className="notification-panel" aria-label="Local notifications">
@@ -1546,6 +1913,7 @@ function App() {
             <NewBookingView
               bookings={bookings}
               createBooking={createBooking}
+              products={products}
               recordSandboxAction={recordSandboxAction}
               setActiveModule={setActiveModule}
             />
@@ -1556,6 +1924,7 @@ function App() {
               bookings={bookings}
               confirmedRevenue={confirmedRevenue}
               forecastRevenue={forecastRevenue}
+              leads={leads}
               overdueFollowUps={overdueFollowUps}
               pipelineRevenue={pipelineRevenue}
               setActiveModule={setActiveModule}
@@ -1573,12 +1942,15 @@ function App() {
             />
           )}
 
-          {(activeModule === 'Leads' || activeModule === 'CRM') && (
-            <CrmView activeModule={activeModule} bookings={bookings} />
+          {activeModule === 'Leads' && (
+            <LeadsView account={loginSession} leads={leads} setLeads={setLeads} />
           )}
+
+          {activeModule === 'CRM' && <CrmView bookings={bookings} />}
 
           {activeModule === 'Bookings' && (
             <BookingsView
+              account={loginSession}
               bookings={filteredBookings}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
@@ -1588,27 +1960,80 @@ function App() {
             />
           )}
 
-          {activeModule === 'BEOs' && selectedBooking && (
-            <BeoView
-              booking={selectedBooking}
-              bookings={filteredBookings}
-              markBeoRevised={markBeoRevised}
-              recordSandboxAction={recordSandboxAction}
-              setSelectedBookingId={setSelectedBookingId}
-            />
-          )}
-
-          {(activeModule === 'Proposals' || activeModule === 'Invoices') &&
-            selectedBooking && (
-              <DocumentsView
-                booking={selectedBooking}
-                documentType={activeModule}
-                recordSandboxAction={recordSandboxAction}
-                setActiveModule={setActiveModule}
+          {activeModule === 'BEOs' &&
+            (beoViewBooking ? (
+              <BeoView
+                appendBeoHistory={appendBeoHistory}
+                booking={beoViewBooking}
+                markBeoRevised={markBeoRevised}
+                onBack={() => setBeoViewBookingId(null)}
+                propertyProfile={propertyProfile}
               />
-            )}
+            ) : (
+              <BeoListView
+                bookings={bookings}
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setBeoViewBookingId(id)
+                }}
+              />
+            ))}
 
-          {activeModule === 'Packages' && <ProductsView />}
+          {activeModule === 'Proposals' &&
+            (proposalViewBooking ? (
+              <DocumentsView
+                account={loginSession}
+                appendDocumentHistory={appendDocumentHistory}
+                booking={proposalViewBooking}
+                documentType="Proposals"
+                onBack={() => setProposalViewBookingId(null)}
+                onOpenBeo={() => {
+                  setActiveModule('BEOs')
+                  setBeoViewBookingId(proposalViewBooking.id)
+                }}
+                propertyProfile={propertyProfile}
+                updateBookingLineItems={updateBookingLineItems}
+              />
+            ) : (
+              <DocumentsListView
+                bookings={bookings}
+                documentType="Proposals"
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setProposalViewBookingId(id)
+                }}
+              />
+            ))}
+
+          {activeModule === 'Invoices' &&
+            (invoiceViewBooking ? (
+              <DocumentsView
+                account={loginSession}
+                appendDocumentHistory={appendDocumentHistory}
+                booking={invoiceViewBooking}
+                documentType="Invoices"
+                onBack={() => setInvoiceViewBookingId(null)}
+                onOpenBeo={() => {
+                  setActiveModule('BEOs')
+                  setBeoViewBookingId(invoiceViewBooking.id)
+                }}
+                propertyProfile={propertyProfile}
+                updateBookingLineItems={updateBookingLineItems}
+              />
+            ) : (
+              <DocumentsListView
+                bookings={bookings}
+                documentType="Invoices"
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setInvoiceViewBookingId(id)
+                }}
+              />
+            ))}
+
+          {activeModule === 'Packages' && (
+            <ProductsView account={loginSession} products={products} setProducts={setProducts} />
+          )}
 
           {activeModule === 'Venues' && <VenuesView bookings={bookings} />}
 
@@ -1619,8 +2044,9 @@ function App() {
               bookings={bookings}
               confirmedRevenue={confirmedRevenue}
               forecastRevenue={forecastRevenue}
+              leads={leads}
               pipelineRevenue={pipelineRevenue}
-              recordSandboxAction={recordSandboxAction}
+              products={products}
             />
           )}
 
@@ -1636,7 +2062,7 @@ function App() {
             />
           )}
         </main>
-        {toast && <div className="toast" role="status">{toast}</div>}
+        {toast && <div className="toast no-print" role="status">{toast}</div>}
       </div>
     </div>
   )
@@ -2056,11 +2482,13 @@ function AdminPortal({
 function NewBookingView({
   bookings,
   createBooking,
+  products,
   recordSandboxAction,
   setActiveModule,
 }: {
   bookings: EventBooking[]
   createBooking: (booking: EventBooking) => void
+  products: Product[]
   recordSandboxAction: (title: string, detail: string) => void
   setActiveModule: (module: ModuleId) => void
 }) {
@@ -2542,6 +2970,7 @@ function DashboardView({
   bookings,
   confirmedRevenue,
   forecastRevenue,
+  leads,
   overdueFollowUps,
   pipelineRevenue,
   setActiveModule,
@@ -2550,6 +2979,7 @@ function DashboardView({
   bookings: EventBooking[]
   confirmedRevenue: number
   forecastRevenue: number
+  leads: Lead[]
   overdueFollowUps: number
   pipelineRevenue: number
   setActiveModule: (module: ModuleId) => void
@@ -2574,6 +3004,37 @@ function DashboardView({
   const unpaidInvoices = bookings.filter((booking) =>
     ['Unpaid', 'Deposit due', 'Partial'].includes(booking.paymentStatus),
   )
+  const openLeads = leads.filter((lead) => lead.stage !== 'Won' && lead.stage !== 'Lost')
+
+  const weekAheadKey = toDateKey(
+    new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 7),
+  )
+  const nearTermBookings = bookings.filter(
+    (booking) =>
+      booking.date >= todayKey &&
+      booking.date <= weekAheadKey &&
+      booking.status !== 'Lost' &&
+      booking.status !== 'Cancelled',
+  )
+  const kitchenItems = nearTermBookings
+    .filter((booking) => booking.menu.length === 0 || booking.guaranteedGuests === 0)
+    .map((booking) => `Final count/menu needed for ${booking.eventName} (${booking.beoNumber})`)
+    .slice(0, 4)
+  const banquetOpsItems = nearTermBookings
+    .filter((booking) => booking.av.length === 0 || !booking.layout || !booking.setupTime)
+    .map((booking) => `Setup/AV pending for ${booking.eventName} (${booking.room})`)
+    .slice(0, 4)
+  const financeItems = nearTermBookings
+    .filter(
+      (booking) =>
+        booking.depositDue > 0 &&
+        (booking.paymentStatus === 'Unpaid' || booking.paymentStatus === 'Deposit due'),
+    )
+    .map(
+      (booking) =>
+        `${booking.paymentStatus}: ${booking.eventName} (${money(booking.depositDue)})`,
+    )
+    .slice(0, 4)
 
   return (
     <div className="page-stack">
@@ -2646,16 +3107,16 @@ function DashboardView({
           <div className="forecast-card">
             <CircleDollarSign size={28} />
             <strong>{money(pipelineRevenue)}</strong>
-            <span>Open opportunity value</span>
+            <span>Open lead value</span>
           </div>
           <div className="stage-list">
-            {opportunities.map((opportunity) => (
-              <div className="stage-item" key={opportunity.id}>
+            {openLeads.map((lead) => (
+              <div className="stage-item" key={lead.id}>
                 <div>
-                  <strong>{opportunity.title}</strong>
-                  <span>{opportunity.stage}</span>
+                  <strong>{lead.name}</strong>
+                  <span>{lead.stage}</span>
                 </div>
-                <em>{opportunity.probability}%</em>
+                <em>{LEAD_STAGE_PROBABILITY[lead.stage]}%</em>
               </div>
             ))}
           </div>
@@ -2665,17 +3126,17 @@ function DashboardView({
       <section className="triple-grid">
         <OperationalPanel
           icon={Utensils}
-          items={['Final count for BKG-2401', 'Vegetarian labels for symposium']}
+          items={kitchenItems.length ? kitchenItems : ['No kitchen items due this week']}
           title="Kitchen"
         />
         <OperationalPanel
           icon={Building2}
-          items={['Stage power check', 'Garden rain backup decision']}
+          items={banquetOpsItems.length ? banquetOpsItems : ['No setup/AV items due this week']}
           title="Banquet operations"
         />
         <OperationalPanel
           icon={ReceiptText}
-          items={['Deposit reminders', 'Partial payment follow-up']}
+          items={financeItems.length ? financeItems : ['No outstanding deposits this week']}
           title="Finance"
         />
       </section>
@@ -2703,7 +3164,7 @@ function CalendarView({
   )
   const monthStart = monthKeyToDate(visibleMonth)
   const calendarStart = new Date(monthStart)
-  calendarStart.setDate(monthStart.getDate() - monthStart.getDay())
+  calendarStart.setDate(monthStart.getDate() - ((monthStart.getDay() + 6) % 7))
 
   const todayKey = toDateKey(new Date())
   const visibleMonthNumber = monthStart.getMonth()
@@ -2711,7 +3172,7 @@ function CalendarView({
     month: 'long',
     year: 'numeric',
   }).format(monthStart)
-  const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
   const calendarDays = Array.from({ length: 42 }, (_, index) => {
     const date = new Date(calendarStart)
     date.setDate(calendarStart.getDate() + index)
@@ -2837,87 +3298,369 @@ function CalendarView({
   )
 }
 
-function CrmView({
-  activeModule,
-  bookings,
+function emptyLead(): Lead {
+  return {
+    id: `LEAD-${Date.now()}`,
+    name: 'New lead',
+    company: '',
+    email: '',
+    phone: '',
+    source: '',
+    category: '',
+    stage: 'New',
+    estimatedValue: 0,
+    owner: '',
+    createdAt: toDateKey(new Date()),
+    notes: '',
+    history: [{ id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note: 'Lead created' }],
+  }
+}
+
+function LeadDetailView({
+  canDelete,
+  canEdit,
+  lead,
+  onBack,
+  onDelete,
+  updateLead,
 }: {
-  activeModule: ModuleId
-  bookings: EventBooking[]
+  canDelete: boolean
+  canEdit: boolean
+  lead: Lead
+  onBack: () => void
+  onDelete: (id: string) => void
+  updateLead: <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => void
 }) {
-  if (activeModule === 'CRM') {
-    return <CustomerDirectory bookings={bookings} />
+  const [isEditing, setIsEditing] = useState(false)
+  const orderedHistory = [...(lead.history ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to leads
+      </button>
+
+      <section className="panel">
+        <div className="drawer-head">
+          <div>
+            <p className="eyebrow">{lead.stage}</p>
+            <h2>
+              {lead.name}
+              {lead.company ? ` · ${lead.company}` : ''}
+            </h2>
+          </div>
+          {(canEdit || canDelete) && (
+            <div className="card-actions">
+              {canEdit && (
+                <button
+                  className={isEditing ? 'secondary-action' : 'primary-action'}
+                  onClick={() => setIsEditing((current) => !current)}
+                  type="button"
+                >
+                  {isEditing ? 'Done' : 'Edit'}
+                </button>
+              )}
+              {canDelete && (
+                <button className="secondary-action" onClick={() => onDelete(lead.id)} type="button">
+                  Delete
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {isEditing ? (
+          <div className="plan-edit-form">
+            <FormField label="Contact name">
+              <input
+                onChange={(event) => updateLead(lead.id, 'name', event.target.value)}
+                value={lead.name}
+              />
+            </FormField>
+            <FormField label="Company">
+              <input
+                onChange={(event) => updateLead(lead.id, 'company', event.target.value)}
+                value={lead.company}
+              />
+            </FormField>
+            <FormField label="Email">
+              <input
+                onChange={(event) => updateLead(lead.id, 'email', event.target.value)}
+                value={lead.email}
+              />
+            </FormField>
+            <FormField label="Phone">
+              <input
+                onChange={(event) => updateLead(lead.id, 'phone', event.target.value)}
+                value={lead.phone}
+              />
+            </FormField>
+            <FormField label="Source">
+              <input
+                onChange={(event) => updateLead(lead.id, 'source', event.target.value)}
+                value={lead.source}
+              />
+            </FormField>
+            <FormField label="Category">
+              <input
+                onChange={(event) => updateLead(lead.id, 'category', event.target.value)}
+                value={lead.category}
+              />
+            </FormField>
+            <FormField label="Stage">
+              <select
+                onChange={(event) => updateLead(lead.id, 'stage', event.target.value as LeadStage)}
+                value={lead.stage}
+              >
+                {LEAD_STAGES.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {stage}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            {lead.stage === 'Lost' && (
+              <FormField label="Lost reason">
+                <input
+                  onChange={(event) => updateLead(lead.id, 'lostReason', event.target.value)}
+                  value={lead.lostReason ?? ''}
+                />
+              </FormField>
+            )}
+            <FormField label="Estimated value">
+              <input
+                min="0"
+                onChange={(event) =>
+                  updateLead(lead.id, 'estimatedValue', Number(event.target.value))
+                }
+                type="number"
+                value={lead.estimatedValue}
+              />
+            </FormField>
+            <FormField label="Owner">
+              <input
+                onChange={(event) => updateLead(lead.id, 'owner', event.target.value)}
+                value={lead.owner}
+              />
+            </FormField>
+            <FormField label="Notes">
+              <textarea
+                onChange={(event) => updateLead(lead.id, 'notes', event.target.value)}
+                value={lead.notes}
+              />
+            </FormField>
+          </div>
+        ) : (
+          <>
+            <div className="detail-grid">
+              <Detail label="Email" value={lead.email || 'Not set'} />
+              <Detail label="Phone" value={lead.phone || 'Not set'} />
+              <Detail label="Source" value={lead.source || 'Not set'} />
+              <Detail label="Category" value={lead.category || 'Not set'} />
+              <Detail label="Estimated value" value={money(lead.estimatedValue)} />
+              <Detail label="Owner" value={lead.owner || 'Unassigned'} />
+              {lead.stage === 'Lost' && (
+                <Detail label="Lost reason" value={lead.lostReason || 'Not recorded'} />
+              )}
+              <Detail label="Created" value={lead.createdAt} />
+            </div>
+            <div className="drawer-section">
+              <h3>Notes</h3>
+              <p>{lead.notes || 'No notes yet.'}</p>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="panel">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {orderedHistory.map((entry) => (
+            <div className="timeline-entry" key={entry.id}>
+              <span className="timeline-dot" />
+              <div>
+                <strong>{entry.note}</strong>
+                <span>{entry.timestamp}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function LeadsView({
+  account,
+  leads,
+  setLeads,
+}: {
+  account: LoginSession
+  leads: Lead[]
+  setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
+}) {
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+  const canCreate = hasPermission(account.role, 'leads:create')
+  const canEdit = hasPermission(account.role, 'leads:edit')
+  const canDelete = hasPermission(account.role, 'leads:delete')
+  const getLeadDate = (lead: Lead) => lead.createdAt
+  const availableMonths = availableMonthsOf(leads, getLeadDate)
+  const availableYears = availableYearsOf(leads, getLeadDate)
+  const [viewMode, setViewMode] = useState<ListViewMode>('grid')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
+  const [selectedMonth, setSelectedMonth] = useState(
+    () => availableMonths[availableMonths.length - 1] ?? '',
+  )
+  const [selectedYear, setSelectedYear] = useState(
+    () => availableYears[availableYears.length - 1] ?? '',
+  )
+  const visibleLeads = filterAndSortByTime(
+    leads,
+    getLeadDate,
+    timeFilter,
+    selectedMonth,
+    selectedYear,
+  )
+
+  const updateLead = <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => {
+    setLeads((current) =>
+      current.map((lead) => {
+        if (lead.id !== id) return lead
+        const next = { ...lead, [field]: value }
+        if (field === 'stage' && lead.stage !== value) {
+          next.history = [
+            ...(lead.history ?? []),
+            {
+              id: `HIST-${Date.now()}`,
+              timestamp: toDateKey(new Date()),
+              note: `Stage changed from ${lead.stage} to ${value as LeadStage}`,
+            },
+          ]
+        }
+        return next
+      }),
+    )
+  }
+
+  const createLead = () => {
+    const lead = emptyLead()
+    setLeads((current) => [lead, ...current])
+    setSelectedLeadId(lead.id)
+  }
+
+  const deleteLead = (id: string) => {
+    if (!window.confirm('Delete this lead? This cannot be undone.')) return
+    setLeads((current) => current.filter((lead) => lead.id !== id))
+    if (selectedLeadId === id) setSelectedLeadId(null)
+  }
+
+  const selectedLead = leads.find((lead) => lead.id === selectedLeadId)
+
+  if (selectedLead) {
+    return (
+      <LeadDetailView
+        canDelete={canDelete}
+        canEdit={canEdit}
+        lead={selectedLead}
+        onBack={() => setSelectedLeadId(null)}
+        onDelete={deleteLead}
+        updateLead={updateLead}
+      />
+    )
   }
 
   return (
     <div className="page-stack">
-      <section className="pipeline-board">
-        {opportunities.map((opportunity) => (
-          <article className="opportunity-card" key={opportunity.id}>
-            <span>{opportunity.stage}</span>
-            <strong>{opportunity.title}</strong>
-            <p>{opportunity.account}</p>
-            <div className="progress-track">
-              <span style={{ width: `${opportunity.probability}%` }} />
-            </div>
-            <div className="card-foot">
-              <em>{money(opportunity.expectedRevenue)}</em>
-              <small>{opportunity.expectedClose}</small>
-            </div>
-            <p className="note-line">{opportunity.nextAction}</p>
-          </article>
-        ))}
-      </section>
-
-      <section className="account-grid">
-        {accounts.map((account) => {
-          const accountBookings = bookings.filter(
-            (booking) => booking.account === account.name,
-          )
-          return (
-            <article className="account-card" key={account.id}>
-              <div className="account-head">
-                <div className="avatar">{account.name.slice(0, 2)}</div>
-                <div className="account-title">
-                  <strong>{account.name}</strong>
-                  <span className="account-type">{account.type}</span>
+      <section className="panel">
+        <PanelHeader
+          action={canCreate ? 'New lead' : undefined}
+          onAction={canCreate ? createLead : undefined}
+          title="Leads"
+        />
+        <ListViewControls
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          setSelectedMonth={setSelectedMonth}
+          setSelectedYear={setSelectedYear}
+          setTimeFilter={setTimeFilter}
+          setViewMode={setViewMode}
+          timeFilter={timeFilter}
+          viewMode={viewMode}
+        />
+        {viewMode === 'grid' ? (
+          <div className="pipeline-board">
+            {visibleLeads.map((lead) => (
+              <button
+                className="opportunity-card"
+                key={lead.id}
+                onClick={() => setSelectedLeadId(lead.id)}
+                type="button"
+              >
+                <span>{lead.stage}</span>
+                <strong>
+                  {lead.name}
+                  {lead.company ? ` · ${lead.company}` : ''}
+                </strong>
+                <p>
+                  {[lead.category, lead.source].filter(Boolean).join(' — ') ||
+                    'No category/source set'}
+                </p>
+                <div className="progress-track">
+                  <span style={{ width: `${LEAD_STAGE_PROBABILITY[lead.stage]}%` }} />
                 </div>
-              </div>
-              <div className="account-stats">
-                <span>
-                  <strong title={money(account.totalRevenue)}>
-                    {compactMoney(account.totalRevenue)}
+                <div className="card-foot">
+                  <em>{money(lead.estimatedValue)}</em>
+                  <small>{lead.owner || 'Unassigned'}</small>
+                </div>
+                <p className="note-line">{lead.notes || 'No notes yet.'}</p>
+              </button>
+            ))}
+            {!visibleLeads.length && <p>No leads for this period.</p>}
+          </div>
+        ) : (
+          <div className="banner-list">
+            {visibleLeads.map((lead) => (
+              <button
+                className="banner-row"
+                key={lead.id}
+                onClick={() => setSelectedLeadId(lead.id)}
+                type="button"
+              >
+                <span className="banner-status">{lead.stage}</span>
+                <div className="banner-main">
+                  <strong>
+                    {lead.name}
+                    {lead.company ? ` · ${lead.company}` : ''}
                   </strong>
-                  <small>Past revenue</small>
-                </span>
-                <span>
-                  <strong>{account.events}</strong>
-                  <small>Past events</small>
-                </span>
-                <span>
-                  <strong>{accountBookings.length}</strong>
-                  <small>Active bookings</small>
-                </span>
-              </div>
-              <dl>
-                <div>
-                  <dt>Contact</dt>
-                  <dd>{account.contact}</dd>
+                  <span>
+                    {[lead.category, lead.source].filter(Boolean).join(' — ') ||
+                      'No category/source set'}
+                  </span>
                 </div>
-                <div>
-                  <dt>Preference</dt>
-                  <dd>{account.preferredPackages.join(', ')}</dd>
-                </div>
-                <div>
-                  <dt>Behavior</dt>
-                  <dd>{account.behavior}</dd>
-                </div>
-              </dl>
-            </article>
-          )
-        })}
+                <span className="banner-meta">{lead.owner || 'Unassigned'}</span>
+                <strong className="banner-value">{money(lead.estimatedValue)}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!visibleLeads.length && <p>No leads for this period.</p>}
+          </div>
+        )}
       </section>
     </div>
   )
+}
+
+function CrmView({
+  bookings,
+}: {
+  bookings: EventBooking[]
+}) {
+  return <CustomerDirectory bookings={bookings} />
 }
 
 function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
@@ -3084,6 +3827,7 @@ function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
 }
 
 function BookingsView({
+  account,
   bookings,
   selectedBookingId,
   setSelectedBookingId,
@@ -3091,6 +3835,7 @@ function BookingsView({
   statusFilter,
   updateBookingStatus,
 }: {
+  account: LoginSession
   bookings: EventBooking[]
   selectedBookingId?: string
   setSelectedBookingId: (id: string) => void
@@ -3101,6 +3846,8 @@ function BookingsView({
     direction: 'backward' | 'forward',
   ) => void
 }) {
+  const canAdvance = hasPermission(account.role, 'booking:advanceStatus')
+  const canFallBack = hasPermission(account.role, 'booking:fallBackStatus')
   const bookingDisplayLimit = 6
   const [showAllBookings, setShowAllBookings] = useState(false)
   const selectedBooking =
@@ -3196,45 +3943,154 @@ function BookingsView({
               ))}
             </ul>
           </div>
-          <div className="status-actions">
-            <button
-              className="secondary-action"
-              disabled={isFirstStatus}
-              onClick={() => updateBookingStatus(selectedBooking.id, 'backward')}
-              type="button"
-            >
-              <ChevronLeft size={17} />
-              Fall back
-            </button>
-            <button
-              className="primary-action"
-              disabled={isLastStatus}
-              onClick={() => updateBookingStatus(selectedBooking.id, 'forward')}
-              type="button"
-            >
-              <CheckCircle2 size={17} />
-              Advance
-            </button>
-          </div>
+          {(canFallBack || canAdvance) && (
+            <div className="status-actions">
+              {canFallBack && (
+                <button
+                  className="secondary-action"
+                  disabled={isFirstStatus}
+                  onClick={() => updateBookingStatus(selectedBooking.id, 'backward')}
+                  type="button"
+                >
+                  <ChevronLeft size={17} />
+                  Fall back
+                </button>
+              )}
+              {canAdvance && (
+                <button
+                  className="primary-action"
+                  disabled={isLastStatus}
+                  onClick={() => updateBookingStatus(selectedBooking.id, 'forward')}
+                  type="button"
+                >
+                  <CheckCircle2 size={17} />
+                  Advance
+                </button>
+              )}
+            </div>
+          )}
         </aside>
       )}
     </div>
   )
 }
 
-function BeoView({
-  booking,
+function BeoListView({
   bookings,
-  markBeoRevised,
-  recordSandboxAction,
-  setSelectedBookingId,
+  onSelect,
 }: {
-  booking: EventBooking
   bookings: EventBooking[]
-  markBeoRevised: (bookingId: string) => void
-  recordSandboxAction: (title: string, detail: string) => void
-  setSelectedBookingId: (id: string) => void
+  onSelect: (bookingId: string) => void
 }) {
+  const getBookingDate = (booking: EventBooking) => booking.date
+  const availableMonths = availableMonthsOf(bookings, getBookingDate)
+  const availableYears = availableYearsOf(bookings, getBookingDate)
+  const [viewMode, setViewMode] = useState<ListViewMode>('grid')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
+  const [selectedMonth, setSelectedMonth] = useState(
+    () => availableMonths[availableMonths.length - 1] ?? '',
+  )
+  const [selectedYear, setSelectedYear] = useState(
+    () => availableYears[availableYears.length - 1] ?? '',
+  )
+  const visibleBookings = filterAndSortByTime(
+    bookings,
+    getBookingDate,
+    timeFilter,
+    selectedMonth,
+    selectedYear,
+  )
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader title="BEOs" />
+        <ListViewControls
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          setSelectedMonth={setSelectedMonth}
+          setSelectedYear={setSelectedYear}
+          setTimeFilter={setTimeFilter}
+          setViewMode={setViewMode}
+          timeFilter={timeFilter}
+          viewMode={viewMode}
+        />
+        {viewMode === 'grid' ? (
+          <div className="resource-grid">
+            {visibleBookings.map((booking) => (
+              <button
+                className="resource-card"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <div className="resource-head">
+                  <span>
+                    {booking.beoNumber} / Rev {booking.revision}
+                  </span>
+                  <strong>{booking.eventName}</strong>
+                </div>
+                <p>
+                  {booking.date} · {booking.venue}, {booking.room}
+                </p>
+                <div className="resource-meta">
+                  <span>{booking.status}</span>
+                  <span>{booking.guaranteedGuests} guaranteed</span>
+                  <span>{money(booking.forecastRevenue)}</span>
+                </div>
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No BEOs for this period.</p>}
+          </div>
+        ) : (
+          <div className="banner-list">
+            {visibleBookings.map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">{booking.status}</span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.beoNumber} / Rev {booking.revision} · {booking.date}
+                  </span>
+                </div>
+                <span className="banner-meta">
+                  {booking.venue}, {booking.room}
+                </span>
+                <strong className="banner-value">{money(booking.forecastRevenue)}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No BEOs for this period.</p>}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function BeoView({
+  appendBeoHistory,
+  booking,
+  markBeoRevised,
+  onBack,
+  propertyProfile,
+}: {
+  appendBeoHistory: (bookingId: string, note: string) => void
+  booking: EventBooking
+  markBeoRevised: (bookingId: string) => void
+  onBack: () => void
+  propertyProfile: PropertyProfile
+}) {
+  const beoHistory = [...(booking.beoHistory ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
   const readinessItems = [
     {
       label: 'Plan and contract',
@@ -3299,25 +4155,14 @@ function BeoView({
   ]
 
   return (
-    <div className="documents-layout">
-      <aside className="document-list">
-        {bookings.map((item) => (
-          <button
-            className={item.id === booking.id ? 'doc-list-item active' : 'doc-list-item'}
-            key={item.id}
-            onClick={() => setSelectedBookingId(item.id)}
-            aria-pressed={item.id === booking.id}
-            type="button"
-          >
-            <FileText size={16} />
-            <span>{item.beoNumber}</span>
-            <em>Rev {item.revision}</em>
-          </button>
-        ))}
-      </aside>
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to BEOs
+      </button>
 
-      <section className="document-preview">
-        <div className="document-toolbar">
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
           <div>
             <p className="eyebrow">Banquet Event Order</p>
             <h2>{booking.beoNumber}</h2>
@@ -3326,9 +4171,12 @@ function BeoView({
             <button
               className="secondary-action"
               onClick={() =>
-                recordSandboxAction(
-                  'BEO share simulated',
-                  `${booking.beoNumber} queued for sales, operations, kitchen, AV, service, and finance.`,
+                shareDocument(
+                  {
+                    title: booking.beoNumber,
+                    text: `${booking.beoNumber} Rev ${booking.revision} — ${booking.eventName}, ${booking.date} at ${booking.venue}.`,
+                  },
+                  () => appendBeoHistory(booking.id, 'Summary copied to clipboard'),
                 )
               }
               type="button"
@@ -3338,16 +4186,14 @@ function BeoView({
             </button>
             <button
               className="secondary-action"
-              onClick={() =>
-                recordSandboxAction(
-                  'PDF export simulated',
-                  `${booking.beoNumber} Rev ${booking.revision} export was logged locally.`,
-                )
-              }
+              onClick={() => {
+                appendBeoHistory(booking.id, 'Printed / exported as PDF')
+                window.print()
+              }}
               type="button"
             >
               <Download size={16} />
-              PDF
+              Print / Save PDF
             </button>
             <button
               className="primary-action"
@@ -3360,7 +4206,7 @@ function BeoView({
           </div>
         </div>
 
-        <section className="beo-control-panel">
+        <section className="beo-control-panel no-print">
           <div className="beo-readiness-head">
             <div>
               <p className="eyebrow">Operational readiness</p>
@@ -3382,17 +4228,9 @@ function BeoView({
               </div>
             ))}
           </div>
-          <div className="department-strip">
-            {departmentResponsibilities.map(([department, responsibility]) => (
-              <div key={department}>
-                <strong>{department}</strong>
-                <span>{responsibility}</span>
-              </div>
-            ))}
-          </div>
         </section>
 
-        <div className="paper">
+        <div className="paper print-doc">
           <div className="paper-head">
             <div>
               <span>EventPilot</span>
@@ -3480,50 +4318,386 @@ function BeoView({
           </PaperSection>
 
           <div className="signature-row">
-            <span>Client approval</span>
-            <span>Operations approval</span>
-            <span>Finance approval</span>
+            <div className="signatory-column">
+              <strong>{booking.account}</strong>
+              <small>Client approval — {booking.contact}</small>
+            </div>
+            <div className="signatory-column">
+              <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
+              <small>
+                Operations approval — {propertyProfile.signatoryTitle || 'Operations'}
+              </small>
+            </div>
+            <div className="signatory-column">
+              <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
+              <small>Finance approval — {propertyProfile.signatoryTitle || 'Finance'}</small>
+            </div>
           </div>
+        </div>
+      </section>
+
+      <section className="panel no-print">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {beoHistory.length ? (
+            beoHistory.map((entry) => (
+              <div className="timeline-entry" key={entry.id}>
+                <span className="timeline-dot" />
+                <div>
+                  <strong>{entry.note}</strong>
+                  <span>{entry.timestamp}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p>No history recorded yet.</p>
+          )}
         </div>
       </section>
     </div>
   )
 }
 
-function DocumentsView({
-  booking,
-  documentType,
-  recordSandboxAction,
-  setActiveModule,
+function LineItemsEditor({
+  editable,
+  lineItems,
+  onChange,
 }: {
-  booking: EventBooking
-  documentType: 'Proposals' | 'Invoices'
-  recordSandboxAction: (title: string, detail: string) => void
-  setActiveModule: (module: ModuleId) => void
+  editable: boolean
+  lineItems: LineItem[]
+  onChange: (next: LineItem[]) => void
 }) {
-  const subtotal = booking.forecastRevenue
-  const serviceCharge = subtotal * 0.1
-  const tax = (subtotal + serviceCharge) * 0.07
-  const total = subtotal + serviceCharge + tax
+  const updateItem = <K extends keyof LineItem>(id: string, field: K, value: LineItem[K]) => {
+    onChange(lineItems.map((item) => (item.id === id ? { ...item, [field]: value } : item)))
+  }
+  const addItem = () => {
+    onChange([
+      ...lineItems,
+      { id: `LI-${Date.now()}`, description: '', quantity: 1, unitPrice: 0 },
+    ])
+  }
+  const removeItem = (id: string) => {
+    onChange(lineItems.filter((item) => item.id !== id))
+  }
 
   return (
-    <section className="document-preview single-document">
-      <div className="document-toolbar">
+    <div className="line-items-editor">
+      <div className="line-items-row line-items-header">
+        <span>Description</span>
+        <span>Qty</span>
+        <span>Unit price</span>
+        <span>Total</span>
+        <span />
+      </div>
+      {lineItems.map((item) => (
+        <div className="line-items-row" key={item.id}>
+          {editable ? (
+            <input
+              onChange={(event) => updateItem(item.id, 'description', event.target.value)}
+              value={item.description}
+            />
+          ) : (
+            <span>{item.description}</span>
+          )}
+          {editable ? (
+            <input
+              min="0"
+              onChange={(event) => updateItem(item.id, 'quantity', Number(event.target.value))}
+              type="number"
+              value={item.quantity}
+            />
+          ) : (
+            <span>{item.quantity}</span>
+          )}
+          {editable ? (
+            <input
+              min="0"
+              onChange={(event) => updateItem(item.id, 'unitPrice', Number(event.target.value))}
+              type="number"
+              value={item.unitPrice}
+            />
+          ) : (
+            <span>{money(item.unitPrice)}</span>
+          )}
+          <strong>{money(item.quantity * item.unitPrice)}</strong>
+          {editable ? (
+            <button
+              aria-label="Remove line item"
+              className="text-action"
+              onClick={() => removeItem(item.id)}
+              type="button"
+            >
+              &times;
+            </button>
+          ) : (
+            <span />
+          )}
+        </div>
+      ))}
+      {editable && (
+        <button className="secondary-action" onClick={addItem} type="button">
+          <Plus size={14} />
+          Add item
+        </button>
+      )}
+    </div>
+  )
+}
+
+const DISCOUNT_MODE_LABELS: Record<DiscountMode, string> = {
+  none: 'No discount',
+  percent: 'Percent',
+  value: 'Amount',
+  promo: 'Promo code',
+}
+
+function DiscountControl({
+  discount,
+  editable,
+  onChange,
+}: {
+  discount: Discount
+  editable: boolean
+  onChange: (next: Discount) => void
+}) {
+  return (
+    <div className="discount-control">
+      {editable && (
+        <div className="segmented-control">
+          {(['none', 'percent', 'value', 'promo'] as DiscountMode[]).map((mode) => (
+            <button
+              className={discount.mode === mode ? 'segment active' : 'segment'}
+              key={mode}
+              onClick={() => onChange({ mode, value: mode === 'none' ? 0 : discount.value, code: discount.code })}
+              type="button"
+            >
+              {DISCOUNT_MODE_LABELS[mode]}
+            </button>
+          ))}
+        </div>
+      )}
+      {discount.mode !== 'none' && (
+        <div className="discount-fields">
+          {editable ? (
+            <FormField label={discount.mode === 'percent' ? 'Percent off' : 'Amount off'}>
+              <input
+                min="0"
+                onChange={(event) => onChange({ ...discount, value: Number(event.target.value) })}
+                type="number"
+                value={discount.value}
+              />
+            </FormField>
+          ) : (
+            <span>
+              {discount.mode === 'percent' ? `${discount.value}% off` : `${money(discount.value)} off`}
+            </span>
+          )}
+          {discount.mode === 'promo' &&
+            (editable ? (
+              <FormField label="Promo code">
+                <input
+                  onChange={(event) => onChange({ ...discount, code: event.target.value })}
+                  value={discount.code ?? ''}
+                />
+              </FormField>
+            ) : (
+              discount.code && <span>Code: {discount.code}</span>
+            ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function documentTotal(booking: EventBooking) {
+  const lineItems = getLineItems(booking)
+  const discount = getDiscount(booking)
+  const subtotal = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+  const netOfDiscount = subtotal - discountAmount(subtotal, discount)
+  return netOfDiscount * 1.1 * 1.07
+}
+
+function DocumentsListView({
+  bookings,
+  documentType,
+  onSelect,
+}: {
+  bookings: EventBooking[]
+  documentType: 'Proposals' | 'Invoices'
+  onSelect: (bookingId: string) => void
+}) {
+  const getBookingDate = (booking: EventBooking) => booking.date
+  const availableMonths = availableMonthsOf(bookings, getBookingDate)
+  const availableYears = availableYearsOf(bookings, getBookingDate)
+  const [viewMode, setViewMode] = useState<ListViewMode>('grid')
+  const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
+  const [selectedMonth, setSelectedMonth] = useState(
+    () => availableMonths[availableMonths.length - 1] ?? '',
+  )
+  const [selectedYear, setSelectedYear] = useState(
+    () => availableYears[availableYears.length - 1] ?? '',
+  )
+  const visibleBookings = filterAndSortByTime(
+    bookings,
+    getBookingDate,
+    timeFilter,
+    selectedMonth,
+    selectedYear,
+  )
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader title={documentType} />
+        <ListViewControls
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          selectedMonth={selectedMonth}
+          selectedYear={selectedYear}
+          setSelectedMonth={setSelectedMonth}
+          setSelectedYear={setSelectedYear}
+          setTimeFilter={setTimeFilter}
+          setViewMode={setViewMode}
+          timeFilter={timeFilter}
+          viewMode={viewMode}
+        />
+        {viewMode === 'grid' ? (
+          <div className="resource-grid">
+            {visibleBookings.map((booking) => (
+              <button
+                className="resource-card"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <div className="resource-head">
+                  <span>{booking.id}</span>
+                  <strong>{booking.eventName}</strong>
+                </div>
+                <p>
+                  {booking.account} · {booking.date}
+                </p>
+                <div className="resource-meta">
+                  <span>{booking.status}</span>
+                  <span>{money(documentTotal(booking))} estimated</span>
+                </div>
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No bookings for this period.</p>}
+          </div>
+        ) : (
+          <div className="banner-list">
+            {visibleBookings.map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">{booking.status}</span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.id} · {booking.account}
+                  </span>
+                </div>
+                <span className="banner-meta">{booking.date}</span>
+                <strong className="banner-value">
+                  {money(documentTotal(booking))} estimated
+                </strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!visibleBookings.length && <p>No bookings for this period.</p>}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function DocumentsView({
+  account,
+  appendDocumentHistory,
+  booking,
+  documentType,
+  onBack,
+  onOpenBeo,
+  propertyProfile,
+  updateBookingLineItems,
+}: {
+  account: LoginSession
+  appendDocumentHistory: (bookingId: string, note: string) => void
+  booking: EventBooking
+  documentType: 'Proposals' | 'Invoices'
+  onBack: () => void
+  onOpenBeo: () => void
+  propertyProfile: PropertyProfile
+  updateBookingLineItems: (bookingId: string, lineItems: LineItem[], discount: Discount) => void
+}) {
+  const [isEditing, setIsEditing] = useState(false)
+  const canEdit = hasPermission(account.role, 'proposal:edit')
+  const lineItems = getLineItems(booking)
+  const discount = getDiscount(booking)
+  const subtotal = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+  const discountValue = discountAmount(subtotal, discount)
+  const netOfDiscount = subtotal - discountValue
+  const serviceCharge = netOfDiscount * 0.1
+  const tax = (netOfDiscount + serviceCharge) * 0.07
+  const total = netOfDiscount + serviceCharge + tax
+  const documentHistory = [...(booking.documentHistory ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
+
+  const handleLineItemsChange = (nextItems: LineItem[]) => {
+    updateBookingLineItems(booking.id, nextItems, discount)
+  }
+  const handleDiscountChange = (nextDiscount: Discount) => {
+    updateBookingLineItems(booking.id, lineItems, nextDiscount)
+  }
+  const handleToggleEdit = () => {
+    if (isEditing) {
+      appendDocumentHistory(booking.id, 'Line items updated')
+    }
+    setIsEditing((current) => !current)
+  }
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to {documentType}
+      </button>
+
+      <section className="document-preview single-document">
+      <div className="document-toolbar no-print">
         <div>
           <p className="eyebrow">{documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}</p>
           <h2>{booking.eventName}</h2>
         </div>
         <div className="toolbar-actions">
-          <button className="secondary-action" onClick={() => setActiveModule('BEOs')} type="button">
+          <button className="secondary-action" onClick={onOpenBeo} type="button">
             <ClipboardList size={16} />
             Open BEO
           </button>
+          {canEdit && (
+            <button
+              className={isEditing ? 'secondary-action' : 'primary-action'}
+              onClick={handleToggleEdit}
+              type="button"
+            >
+              {isEditing ? 'Done editing' : 'Edit line items'}
+            </button>
+          )}
           <button
-            className="primary-action"
+            className="secondary-action"
             onClick={() =>
-              recordSandboxAction(
-                `${documentType === 'Proposals' ? 'Proposal' : 'Invoice'} send simulated`,
-                `${booking.account} would receive ${booking.eventName} by email in production.`,
+              shareDocument(
+                {
+                  title: `${booking.eventName} — ${documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}`,
+                  text: `${booking.account}: ${money(total)} total for ${booking.eventName} on ${booking.date}.`,
+                },
+                () => appendDocumentHistory(booking.id, 'Summary copied to clipboard'),
               )
             }
             type="button"
@@ -3531,10 +4705,21 @@ function DocumentsView({
             <Send size={16} />
             Send to client
           </button>
+          <button
+            className="primary-action"
+            onClick={() => {
+              appendDocumentHistory(booking.id, 'Printed / exported as PDF')
+              window.print()
+            }}
+            type="button"
+          >
+            <Download size={16} />
+            Print / Save PDF
+          </button>
         </div>
       </div>
 
-      <div className="paper">
+      <div className="paper print-doc">
         <div className="paper-head">
           <div>
             <span>EventPilot</span>
@@ -3555,15 +4740,37 @@ function DocumentsView({
           <Detail label="Guests" value={`${booking.expectedGuests} expected`} />
         </div>
 
-        <PaperSection title="Package inclusions">
-          <TagList items={[...booking.menu, ...booking.av, ...booking.staffing]} />
+        <PaperSection title="Line items">
+          <LineItemsEditor
+            editable={isEditing}
+            lineItems={lineItems}
+            onChange={handleLineItemsChange}
+          />
         </PaperSection>
+
+        {(isEditing || discount.mode !== 'none') && (
+          <PaperSection title="Discount">
+            <DiscountControl
+              discount={discount}
+              editable={isEditing}
+              onChange={handleDiscountChange}
+            />
+          </PaperSection>
+        )}
 
         <div className="invoice-table">
           <div>
-            <span>Event package and venue estimate</span>
+            <span>Subtotal</span>
             <strong>{money(subtotal)}</strong>
           </div>
+          {discountValue > 0 && (
+            <div>
+              <span>
+                Discount{discount.mode === 'promo' && discount.code ? ` (${discount.code})` : ''}
+              </span>
+              <strong>-{money(discountValue)}</strong>
+            </div>
+          )}
           <div>
             <span>Service charge 10%</span>
             <strong>{money(serviceCharge)}</strong>
@@ -3581,40 +4788,276 @@ function DocumentsView({
             <strong>{money(booking.depositDue)}</strong>
           </div>
         </div>
+
+        <div className="proposal-signature-row">
+          <div className="signatory-column">
+            <strong>{propertyProfile.signatoryName || 'Authorized signatory'}</strong>
+            <small>
+              {propertyProfile.name} — {propertyProfile.signatoryTitle || 'Management'}
+            </small>
+          </div>
+          <div className="signatory-column">
+            <strong>{booking.account}</strong>
+            <small>Client acceptance — {booking.contact}</small>
+          </div>
+        </div>
       </div>
-    </section>
+      </section>
+
+      <section className="panel no-print">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {documentHistory.length ? (
+            documentHistory.map((entry) => (
+              <div className="timeline-entry" key={entry.id}>
+                <span className="timeline-dot" />
+                <div>
+                  <strong>{entry.note}</strong>
+                  <span>{entry.timestamp}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p>No history recorded yet.</p>
+          )}
+        </div>
+      </section>
+    </div>
   )
 }
 
-function ProductsView() {
+function emptyProduct(): Product {
+  return {
+    id: `PRD-${Date.now()}`,
+    name: 'New package',
+    category: 'Package',
+    description: '',
+    price: null,
+    unit: 'per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: false,
+    tags: [],
+  }
+}
+
+function ProductDetailView({
+  canDelete,
+  onBack,
+  onDelete,
+  onSave,
+  product,
+}: {
+  canDelete: boolean
+  onBack: () => void
+  onDelete: () => void
+  onSave: (product: Product) => void
+  product: Product
+}) {
+  const [draft, setDraft] = useState<Product>(product)
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(product)
+
+  const setField = <K extends keyof Product>(field: K, value: Product[K]) => {
+    setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleBack = () => {
+    if (isDirty && !window.confirm('Discard unsaved changes to this package?')) return
+    onBack()
+  }
+
+  const handleSave = () => {
+    onSave(draft)
+    onBack()
+  }
+
   return (
-    <section className="resource-grid">
-      {products.map((product) => (
-        <article className="resource-card" key={product.id}>
-          <div className="resource-head">
-            <span>{product.category}</span>
-            <strong>{product.name}</strong>
+    <div className="page-stack">
+      <button className="text-action back-action" onClick={handleBack} type="button">
+        <ChevronLeft size={16} />
+        Back to Packages
+      </button>
+
+      <section className="panel">
+        <div className="drawer-head">
+          <div>
+            <p className="eyebrow">{draft.category}</p>
+            <h2>{draft.name}</h2>
           </div>
-          <p>{product.description}</p>
-          <div className="resource-meta">
-            <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
-            <span>{product.unit}</span>
-            <span>{product.availability}</span>
-          </div>
-          <TagList items={product.tags} />
-          {product.sourceUrl && (
-            <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
-              <ExternalLink size={14} />
-              Source page
-            </a>
+          {canDelete && (
+            <button className="secondary-action" onClick={onDelete} type="button">
+              Delete
+            </button>
           )}
-          <div className="toggle-row">
-            <span>Show on BEO</span>
-            <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
-          </div>
-        </article>
-      ))}
-    </section>
+        </div>
+
+        <div className="plan-edit-form">
+          <FormField label="Name">
+            <input onChange={(event) => setField('name', event.target.value)} value={draft.name} />
+          </FormField>
+          <FormField label="Category">
+            <input
+              onChange={(event) => setField('category', event.target.value)}
+              value={draft.category}
+            />
+          </FormField>
+          <FormField label="Description">
+            <textarea
+              onChange={(event) => setField('description', event.target.value)}
+              value={draft.description}
+            />
+          </FormField>
+          <FormField label="Price">
+            <input
+              min="0"
+              onChange={(event) =>
+                setField('price', event.target.value === '' ? null : Number(event.target.value))
+              }
+              type="number"
+              value={draft.price ?? ''}
+            />
+          </FormField>
+          <FormField label="Unit">
+            <input onChange={(event) => setField('unit', event.target.value)} value={draft.unit} />
+          </FormField>
+          <FormField label="Availability">
+            <input
+              onChange={(event) => setField('availability', event.target.value)}
+              value={draft.availability}
+            />
+          </FormField>
+          <FormField label="Display price to client">
+            <select
+              onChange={(event) => setField('displayPrice', event.target.value === 'Yes')}
+              value={draft.displayPrice ? 'Yes' : 'No'}
+            >
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
+          </FormField>
+          <FormField label="Show on BEO">
+            <select
+              onChange={(event) => setField('displayOnBeo', event.target.value === 'Yes')}
+              value={draft.displayOnBeo ? 'Yes' : 'No'}
+            >
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
+          </FormField>
+        </div>
+
+        <div className="card-actions">
+          <button className="secondary-action" onClick={handleBack} type="button">
+            Cancel
+          </button>
+          <button className="primary-action" onClick={handleSave} type="button">
+            Save changes
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ProductsView({
+  account,
+  products,
+  setProducts,
+}: {
+  account: LoginSession
+  products: Product[]
+  setProducts: (next: Product[] | ((current: Product[]) => Product[])) => void
+}) {
+  const [viewingProductId, setViewingProductId] = useState<string | null>(null)
+  const canEdit = hasPermission(account.role, 'packages:edit')
+
+  const createProduct = () => {
+    const product = emptyProduct()
+    setProducts((current) => [product, ...current])
+    setViewingProductId(product.id)
+  }
+
+  const deleteProduct = (id: string) => {
+    if (!window.confirm('Delete this package? This cannot be undone.')) return
+    setProducts((current) => current.filter((product) => product.id !== id))
+    if (viewingProductId === id) setViewingProductId(null)
+  }
+
+  const viewingProduct = products.find((product) => product.id === viewingProductId)
+
+  if (viewingProduct) {
+    return (
+      <ProductDetailView
+        canDelete={canEdit}
+        onBack={() => setViewingProductId(null)}
+        onDelete={() => deleteProduct(viewingProduct.id)}
+        onSave={(updated) =>
+          setProducts((current) =>
+            current.map((product) => (product.id === updated.id ? updated : product)),
+          )
+        }
+        product={viewingProduct}
+      />
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader
+          action={canEdit ? 'New package' : undefined}
+          onAction={canEdit ? createProduct : undefined}
+          title="Packages"
+        />
+        <div className="resource-grid">
+          {products.map((product) => (
+            <article className="resource-card" key={product.id}>
+              <div className="resource-head">
+                <span>{product.category}</span>
+                <strong>{product.name}</strong>
+              </div>
+              <p>{product.description}</p>
+              <div className="resource-meta">
+                <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
+                <span>{product.unit}</span>
+                <span>{product.availability}</span>
+              </div>
+              <TagList items={product.tags} />
+              {product.sourceUrl && (
+                <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
+                  <ExternalLink size={14} />
+                  Source page
+                </a>
+              )}
+              <div className="toggle-row">
+                <span>Show on BEO</span>
+                <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
+              </div>
+              {canEdit && (
+                <div className="card-actions">
+                  <button
+                    className="primary-action"
+                    onClick={() => setViewingProductId(product.id)}
+                    type="button"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="secondary-action"
+                    onClick={() => deleteProduct(product.id)}
+                    type="button"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </article>
+          ))}
+          {!products.length && <p>No packages yet.</p>}
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -3688,22 +5131,114 @@ function TasksView({ bookings }: { bookings: EventBooking[] }) {
   )
 }
 
+type ReportKey =
+  | 'monthly-banquet-calendar'
+  | 'weekly-operations-report'
+  | 'lost-business-analysis'
+  | 'package-popularity'
+  | 'venue-utilization'
+  | 'salesperson-performance'
+
+const REPORT_ITEMS: Array<{ key: ReportKey; label: string }> = [
+  { key: 'monthly-banquet-calendar', label: 'Monthly banquet calendar' },
+  { key: 'weekly-operations-report', label: 'Weekly operations report' },
+  { key: 'lost-business-analysis', label: 'Lost business analysis' },
+  { key: 'package-popularity', label: 'Package popularity' },
+  { key: 'venue-utilization', label: 'Venue utilization' },
+  { key: 'salesperson-performance', label: 'Salesperson performance' },
+]
+
 function ReportsView({
   bookings,
   confirmedRevenue,
   forecastRevenue,
+  leads,
   pipelineRevenue,
-  recordSandboxAction,
+  products,
 }: {
   bookings: EventBooking[]
   confirmedRevenue: number
   forecastRevenue: number
+  leads: Lead[]
   pipelineRevenue: number
-  recordSandboxAction: (title: string, detail: string) => void
+  products: Product[]
 }) {
+  const [activeReport, setActiveReport] = useState<ReportKey | null>(null)
   const confirmed = bookings.filter((booking) => booking.status === 'Confirmed').length
   const tentative = bookings.filter((booking) => booking.status === 'Tentative').length
   const outstanding = bookings.filter((booking) => booking.paymentStatus !== 'Paid').length
+
+  const monthlyBanquetCalendar = useMemo(() => {
+    const groups = new Map<string, EventBooking[]>()
+    bookings.forEach((booking) => {
+      const key = toMonthKey(toLocalDate(booking.date))
+      groups.set(key, [...(groups.get(key) ?? []), booking])
+    })
+    return [...groups.entries()].sort(([first], [second]) => first.localeCompare(second))
+  }, [bookings])
+
+  const weeklyOperations = useMemo(() => {
+    const now = new Date()
+    const weekOffset = (now.getDay() + 6) % 7
+    const weekStart = toDateKey(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - weekOffset),
+    )
+    const weekEnd = toDateKey(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - weekOffset + 6),
+    )
+    return bookings
+      .filter((booking) => booking.date >= weekStart && booking.date <= weekEnd)
+      .map((booking) => ({
+        booking,
+        bookingTasks: tasks.filter((task) => task.bookingId === booking.id),
+      }))
+  }, [bookings])
+
+  const lostBookings = bookings.filter((booking) => booking.status === 'Lost')
+  const lostLeads = leads.filter((lead) => lead.stage === 'Lost')
+
+  const packagePopularity = useMemo(() => {
+    const counts = new Map<string, number>()
+    bookings.forEach((booking) => {
+      if (!booking.packageName) return
+      counts.set(booking.packageName, (counts.get(booking.packageName) ?? 0) + 1)
+    })
+    return [...counts.entries()]
+      .map(([name, count]) => ({
+        name,
+        count,
+        product: products.find((product) => product.name === name),
+      }))
+      .sort((first, second) => second.count - first.count)
+  }, [bookings, products])
+
+  const venueUtilization = useMemo(
+    () =>
+      venues.map((venue) => ({
+        venue,
+        activeBookings: bookings.filter(
+          (booking) => booking.venue === venue.name && booking.status !== 'Cancelled',
+        ).length,
+      })),
+    [bookings],
+  )
+
+  const salespersonPerformance = useMemo(() => {
+    const totals = new Map<string, { revenue: number; forecast: number; count: number }>()
+    bookings.forEach((booking) => {
+      const current = totals.get(booking.owner) ?? { revenue: 0, forecast: 0, count: 0 }
+      totals.set(booking.owner, {
+        revenue: current.revenue + booking.revenue,
+        forecast:
+          current.forecast +
+          (booking.status === 'Lost' || booking.status === 'Cancelled'
+            ? 0
+            : booking.forecastRevenue),
+        count: current.count + 1,
+      })
+    })
+    return [...totals.entries()].sort(([, first], [, second]) => second.revenue - first.revenue)
+  }, [bookings])
 
   return (
     <div className="page-stack">
@@ -3711,7 +5246,7 @@ function ReportsView({
         <MetricCard icon={ShieldCheck} label="Confirmed events" value={confirmed.toString()} detail="Signed bookings" />
         <MetricCard icon={Clock3} label="Tentative holds" value={tentative.toString()} detail="Hold expiry monitored" />
         <MetricCard icon={ReceiptText} label="Outstanding invoices" value={outstanding.toString()} detail="Deposit or final payment" />
-        <MetricCard icon={BarChart3} label="Pipeline value" value={money(pipelineRevenue)} detail="Open opportunities" />
+        <MetricCard icon={BarChart3} label="Pipeline value" value={money(pipelineRevenue)} detail="Open leads" />
       </section>
 
       <section className="split-layout">
@@ -3726,33 +5261,148 @@ function ReportsView({
         <div className="panel">
           <PanelHeader title="Report library" />
           <div className="report-list">
-            {[
-              'Monthly banquet calendar',
-              'Weekly operations report',
-              'Lost business analysis',
-              'Package popularity',
-              'Venue utilization',
-              'Salesperson performance',
-            ].map((report) => (
+            {REPORT_ITEMS.map((report) => (
               <button
-                className="report-item"
-                key={report}
+                className={activeReport === report.key ? 'report-item active' : 'report-item'}
+                key={report.key}
                 onClick={() =>
-                  recordSandboxAction(
-                    'Report opened',
-                    `${report} is available as a local sandbox drilldown.`,
-                  )
+                  setActiveReport((current) => (current === report.key ? null : report.key))
                 }
                 type="button"
               >
                 <BarChart3 size={16} />
-                {report}
+                {report.label}
                 <ChevronRight size={16} />
               </button>
             ))}
           </div>
         </div>
       </section>
+
+      {activeReport && (
+        <section className="panel report-drilldown">
+          <PanelHeader title={REPORT_ITEMS.find((item) => item.key === activeReport)?.label ?? ''} />
+          <div className="stage-list">
+            {activeReport === 'monthly-banquet-calendar' &&
+              (monthlyBanquetCalendar.length ? (
+                monthlyBanquetCalendar.map(([month, monthBookings]) => (
+                  <div className="stage-item" key={month}>
+                    <div>
+                      <strong>{month}</strong>
+                      <span>{monthBookings.map((booking) => booking.eventName).join(', ')}</span>
+                    </div>
+                    <em>{monthBookings.length} event{monthBookings.length === 1 ? '' : 's'}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No bookings scheduled.</p>
+              ))}
+
+            {activeReport === 'weekly-operations-report' &&
+              (weeklyOperations.length ? (
+                weeklyOperations.map(({ booking, bookingTasks }) => (
+                  <div className="stage-item" key={booking.id}>
+                    <div>
+                      <strong>{booking.eventName}</strong>
+                      <span>
+                        {booking.date} · {bookingTasks.length} task
+                        {bookingTasks.length === 1 ? '' : 's'}
+                        {bookingTasks.length
+                          ? `: ${bookingTasks.map((task) => task.title).join(', ')}`
+                          : ''}
+                      </span>
+                    </div>
+                    <em>{booking.status}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No bookings scheduled this week.</p>
+              ))}
+
+            {activeReport === 'lost-business-analysis' &&
+              (lostBookings.length || lostLeads.length ? (
+                <>
+                  {lostBookings.map((booking) => (
+                    <div className="stage-item" key={booking.id}>
+                      <div>
+                        <strong>{booking.eventName}</strong>
+                        <span>
+                          {booking.leadSource} · {booking.nextAction}
+                        </span>
+                      </div>
+                      <em>{money(booking.forecastRevenue)}</em>
+                    </div>
+                  ))}
+                  {lostLeads.map((lead) => (
+                    <div className="stage-item" key={lead.id}>
+                      <div>
+                        <strong>
+                          {lead.name}
+                          {lead.company ? ` · ${lead.company}` : ''}
+                        </strong>
+                        <span>{lead.lostReason || 'No lost reason recorded'}</span>
+                      </div>
+                      <em>{money(lead.estimatedValue)}</em>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <p>No lost business recorded.</p>
+              ))}
+
+            {activeReport === 'package-popularity' &&
+              (packagePopularity.length ? (
+                packagePopularity.map((row) => (
+                  <div className="stage-item" key={row.name}>
+                    <div>
+                      <strong>{row.name}</strong>
+                      <span>
+                        {row.product
+                          ? `${row.product.category} · ${priceLabel(row.product.price)}`
+                          : 'Not in package catalog'}
+                      </span>
+                    </div>
+                    <em>{row.count} booking{row.count === 1 ? '' : 's'}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No packages booked yet.</p>
+              ))}
+
+            {activeReport === 'venue-utilization' &&
+              venueUtilization.map(({ venue, activeBookings }) => (
+                <div className="stage-item" key={venue.id}>
+                  <div>
+                    <strong>{venue.name}</strong>
+                    <span>
+                      {venue.utilization}% baseline utilization · {activeBookings} active booking
+                      {activeBookings === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <em>{capacityLabel(venue.capacity)} cap</em>
+                </div>
+              ))}
+
+            {activeReport === 'salesperson-performance' &&
+              (salespersonPerformance.length ? (
+                salespersonPerformance.map(([owner, totals]) => (
+                  <div className="stage-item" key={owner}>
+                    <div>
+                      <strong>{owner}</strong>
+                      <span>
+                        {totals.count} booking{totals.count === 1 ? '' : 's'} ·{' '}
+                        {money(totals.forecast)} forecast
+                      </span>
+                    </div>
+                    <em>{money(totals.revenue)}</em>
+                  </div>
+                ))
+              ) : (
+                <p>No bookings recorded.</p>
+              ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -4978,6 +6628,7 @@ function SettingsView({
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<PropertyProfile>(propertyProfile)
+  const canEditProfile = hasPermission(account.role, 'admin:settings')
 
   const startEditing = () => {
     setDraft(propertyProfile)
@@ -5036,9 +6687,11 @@ function SettingsView({
                   </button>
                 </div>
               ) : (
-                <button className="secondary-action" onClick={startEditing} type="button">
-                  Edit
-                </button>
+                canEditProfile && (
+                  <button className="secondary-action" onClick={startEditing} type="button">
+                    Edit
+                  </button>
+                )
               )}
             </div>
           </div>
@@ -5105,12 +6758,36 @@ function SettingsView({
                   value={draft.lineOfficial}
                 />
               </FormField>
+              <FormField label="Signatory name" hint="Printed on proposals, invoices, and BEOs">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, signatoryName: event.target.value }))
+                  }
+                  value={draft.signatoryName}
+                />
+              </FormField>
+              <FormField label="Signatory title">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, signatoryTitle: event.target.value }))
+                  }
+                  value={draft.signatoryTitle}
+                />
+              </FormField>
             </div>
           ) : (
             <div className="profile-grid property-profile-grid">
               <Detail label="Address" value={propertyProfile.address} />
               <Detail label="Phone" value={propertyProfile.phones.join(', ')} />
               <Detail label="Line Official" value={propertyProfile.lineOfficial} />
+              <Detail
+                label="Signatory"
+                value={
+                  propertyProfile.signatoryName
+                    ? `${propertyProfile.signatoryName}${propertyProfile.signatoryTitle ? ` — ${propertyProfile.signatoryTitle}` : ''}`
+                    : 'Not set'
+                }
+              />
               <div className="detail-item detail-item-wide">
                 <dt>Email routing</dt>
                 <dd>
@@ -5142,7 +6819,7 @@ function SettingsView({
         updateProfileName={updateProfileName}
       />
 
-      {isSupabaseEnabled && account.role === 'top_management' && (
+      {isSupabaseEnabled && hasPermission(account.role, 'admin:userManagement') && (
         <UserManagementPanel currentUserId={currentUserId} />
       )}
 
