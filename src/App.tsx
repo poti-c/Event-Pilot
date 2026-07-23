@@ -63,6 +63,7 @@ import type {
   Discount,
   DiscountMode,
   EventBooking,
+  FollowUp,
   Lead,
   LeadStage,
   LineItem,
@@ -97,11 +98,11 @@ type NavItem = {
 const navItems: NavItem[] = [
   { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'Calendar', label: 'Calendar / Function Diary', icon: CalendarDays },
-  { id: 'Leads', label: 'Leads', icon: Sparkles },
   { id: 'CRM', label: 'CRM', icon: Users },
+  { id: 'Leads', label: 'Leads', icon: Sparkles },
+  { id: 'Proposals', label: 'Proposals', icon: FileText },
   { id: 'Bookings', label: 'Bookings', icon: BookOpenCheck },
   { id: 'BEOs', label: 'BEOs', icon: ClipboardList },
-  { id: 'Proposals', label: 'Proposals', icon: FileText },
   { id: 'Invoices', label: 'Invoices', icon: ReceiptText },
   { id: 'Packages', label: 'Packages & Products', icon: Boxes },
   { id: 'Venues', label: 'Venues', icon: MapPinned },
@@ -154,6 +155,38 @@ const LEAD_STAGE_PROBABILITY: Record<LeadStage, number> = {
   'Proposal Sent': 65,
   Won: 100,
   Lost: 0,
+}
+
+// The linear "hunt" pipeline sales works a lead along. Lost is an off-ramp
+// reachable from any stage, so it is not part of the forward/back order.
+const LEAD_PIPELINE: LeadStage[] = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won']
+
+function nextLeadStage(current: LeadStage): LeadStage {
+  const index = LEAD_PIPELINE.indexOf(current)
+  if (index === -1) return current
+  return LEAD_PIPELINE[Math.min(index + 1, LEAD_PIPELINE.length - 1)]
+}
+
+function previousLeadStage(current: LeadStage): LeadStage {
+  const index = LEAD_PIPELINE.indexOf(current)
+  if (index === -1) return current
+  return LEAD_PIPELINE[Math.max(index - 1, 0)]
+}
+
+function stageClass(stage: LeadStage) {
+  return `stage-tone-${stage.toLowerCase().replace(/\s+/g, '-')}`
+}
+
+// The most recent date any part of the lead changed: an explicit updatedAt stamp,
+// or (for seeded leads that predate it) the latest history / follow-up entry.
+function leadLastUpdated(lead: Lead): string {
+  const stamps = [
+    lead.updatedAt,
+    ...(lead.history ?? []).map((entry) => entry.timestamp),
+    ...(lead.followUps ?? []).map((entry) => entry.timestamp),
+    lead.createdAt,
+  ].filter((value): value is string => Boolean(value))
+  return [...stamps].sort().at(-1) ?? lead.createdAt
 }
 
 const statusOrder: BookingStatus[] = [
@@ -973,6 +1006,31 @@ function getNewBookingDefaults(): NewBookingFormState {
   }
 }
 
+// Carry across everything a lead already captured so converting to a booking /
+// proposal never re-types known data. Unknown booking fields keep their defaults.
+function bookingPrefillFromLead(lead: Lead): NewBookingFormState {
+  const defaults = getNewBookingDefaults()
+  const accountName = lead.company || lead.name
+  const contactLine = [lead.email, lead.phone].filter(Boolean).join(' · ')
+  return {
+    ...defaults,
+    eventName: lead.category ? `${accountName} — ${lead.category}` : `${accountName} event`,
+    eventType: lead.category || defaults.eventType,
+    account: accountName,
+    contact: lead.name,
+    owner: lead.owner || defaults.owner,
+    leadSource: lead.source || defaults.leadSource,
+    forecastRevenue: lead.estimatedValue ? String(lead.estimatedValue) : '',
+    clientNotes: lead.notes || '',
+    internalNotes: [
+      `Converted from lead ${lead.id}.`,
+      contactLine ? `Contact: ${contactLine}.` : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+  }
+}
+
 type SaaSTierId = 'Starter' | 'Gold' | 'Platinum'
 type ClientAccountStatus = 'Active' | 'Pilot' | 'Suspended'
 type AdminConsoleTab = 'Clients' | 'Plans' | 'Company' | 'Security'
@@ -1332,6 +1390,12 @@ function App() {
   const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
   const [proposalViewBookingId, setProposalViewBookingId] = useState<string | null>(null)
   const [invoiceViewBookingId, setInvoiceViewBookingId] = useState<string | null>(null)
+  // When a lead is converted, the New Booking form opens pre-filled; convertTarget
+  // decides whether Save lands on Bookings or jumps straight to the proposal.
+  const [bookingPrefill, setBookingPrefill] = useState<NewBookingFormState | null>(null)
+  const [convertTarget, setConvertTarget] = useState<'booking' | 'proposal'>('booking')
+  const [packagesNavNonce, setPackagesNavNonce] = useState(0)
+  const [leadsNavNonce, setLeadsNavNonce] = useState(0)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -1649,6 +1713,49 @@ function App() {
     )
   }
 
+  const convertLead = (lead: Lead, target: 'booking' | 'proposal') => {
+    setBookingPrefill(bookingPrefillFromLead(lead))
+    setConvertTarget(target)
+    setActiveModule('NewBooking')
+
+    // Move the lead forward and record who converted it. Never step a stage
+    // backward (e.g. a Won lead sent to a fresh proposal keeps Won).
+    const actorName =
+      loginSession.displayName.trim() || loginSession.email || 'A team member'
+    const targetLabel = target === 'booking' ? 'booking' : 'proposal'
+    const targetStage: LeadStage = target === 'booking' ? 'Won' : 'Proposal Sent'
+    const stamp = toDateKey(new Date())
+    setLeads((current) =>
+      current.map((item) => {
+        if (item.id !== lead.id) return item
+        const advanced =
+          LEAD_PIPELINE.indexOf(targetStage) > LEAD_PIPELINE.indexOf(item.stage)
+        const nextStage = advanced ? targetStage : item.stage
+        return {
+          ...item,
+          stage: nextStage,
+          updatedAt: stamp,
+          history: [
+            ...(item.history ?? []),
+            {
+              id: `HIST-${Date.now()}`,
+              timestamp: stamp,
+              note: advanced
+                ? `Converted to ${targetLabel} by ${actorName} — stage advanced to ${nextStage}`
+                : `Converted to ${targetLabel} by ${actorName}`,
+            },
+          ],
+        }
+      }),
+    )
+  }
+
+  const openNewBooking = () => {
+    setBookingPrefill(null)
+    setConvertTarget('booking')
+    setActiveModule('NewBooking')
+  }
+
   // Vendor console sign-in (see src/consoleClient.ts). Separate credentials,
   // separate token, no Supabase Auth involvement.
   const handleConsoleLogin = async (
@@ -1762,6 +1869,11 @@ function App() {
     if (id === 'BEOs') setBeoViewBookingId(null)
     if (id === 'Proposals') setProposalViewBookingId(null)
     if (id === 'Invoices') setInvoiceViewBookingId(null)
+    // Packages and Leads keep their open-item state inside their own view, so
+    // bump a nonce to remount — clicking the nav returns to the list instead of
+    // a stale detail.
+    if (id === 'Packages') setPackagesNavNonce((nonce) => nonce + 1)
+    if (id === 'Leads') setLeadsNavNonce((nonce) => nonce + 1)
   }
 
   const handleLogout = async () => {
@@ -1899,7 +2011,10 @@ function App() {
               <a
                 className="primary-action"
                 href="#NewBooking"
-                onClick={() => setActiveModule('NewBooking')}
+                onClick={(event) => {
+                  event.preventDefault()
+                  openNewBooking()
+                }}
               >
                 <Plus size={17} />
                 New booking
@@ -1948,7 +2063,15 @@ function App() {
           {activeModule === 'NewBooking' && (
             <NewBookingView
               bookings={bookings}
+              convertTarget={convertTarget}
               createBooking={createBooking}
+              key={bookingPrefill ? 'prefilled' : 'blank'}
+              onOpenProposal={(bookingId) => {
+                setSelectedBookingId(bookingId)
+                setProposalViewBookingId(bookingId)
+                setActiveModule('Proposals')
+              }}
+              prefill={bookingPrefill}
               products={products}
               recordSandboxAction={recordSandboxAction}
               setActiveModule={setActiveModule}
@@ -1971,6 +2094,10 @@ function App() {
           {activeModule === 'Calendar' && (
             <CalendarView
               bookings={filteredBookings}
+              onViewBeo={(bookingId) => {
+                setActiveModule('BEOs')
+                setBeoViewBookingId(bookingId)
+              }}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
               setStatusFilter={setStatusFilter}
@@ -1979,7 +2106,13 @@ function App() {
           )}
 
           {activeModule === 'Leads' && (
-            <LeadsView account={loginSession} leads={leads} setLeads={setLeads} />
+            <LeadsView
+              account={loginSession}
+              key={leadsNavNonce}
+              leads={leads}
+              onConvert={convertLead}
+              setLeads={setLeads}
+            />
           )}
 
           {activeModule === 'CRM' && <CrmView bookings={bookings} />}
@@ -2073,7 +2206,12 @@ function App() {
             ))}
 
           {activeModule === 'Packages' && (
-            <ProductsView account={loginSession} products={products} setProducts={setProducts} />
+            <ProductsView
+              account={loginSession}
+              key={packagesNavNonce}
+              products={products}
+              setProducts={setProducts}
+            />
           )}
 
           {activeModule === 'Venues' && <VenuesView bookings={bookings} />}
@@ -2522,18 +2660,24 @@ function AdminPortal({
 
 function NewBookingView({
   bookings,
+  convertTarget = 'booking',
   createBooking,
+  onOpenProposal,
+  prefill,
   products,
   recordSandboxAction,
   setActiveModule,
 }: {
   bookings: EventBooking[]
+  convertTarget?: 'booking' | 'proposal'
   createBooking: (booking: EventBooking) => void
+  onOpenProposal?: (bookingId: string) => void
+  prefill?: NewBookingFormState | null
   products: Product[]
   recordSandboxAction: (title: string, detail: string) => void
   setActiveModule: (module: ModuleId) => void
 }) {
-  const [form, setForm] = useState<NewBookingFormState>(getNewBookingDefaults)
+  const [form, setForm] = useState<NewBookingFormState>(() => prefill ?? getNewBookingDefaults())
   const [formNotice, setFormNotice] = useState('')
   const updateField = <K extends keyof NewBookingFormState>(
     field: K,
@@ -2656,6 +2800,8 @@ function NewBookingView({
       'Workflow started',
       `${booking.eventName} generated calendar, BEO, proposal, and invoice records locally.`,
     )
+    // Converting "to a proposal" means: create the booking, then open its proposal.
+    if (convertTarget === 'proposal') onOpenProposal?.(booking.id)
   }
 
   return (
@@ -2665,8 +2811,11 @@ function NewBookingView({
           <p className="eyebrow">Booking intake</p>
           <h2>Required information for a new booking</h2>
           <p>
-            Capture enough detail to place the event on the calendar, qualify the
-            sales stage, prepare a proposal, and start the BEO draft.
+            {prefill
+              ? convertTarget === 'proposal'
+                ? 'Details from the lead are filled in below. Complete the rest and save to create the booking and open its proposal.'
+                : 'Details from the lead are filled in below. Complete the rest and save to create the booking.'
+              : 'Capture enough detail to place the event on the calendar, qualify the sales stage, prepare a proposal, and start the BEO draft.'}
           </p>
         </div>
         <div className="form-readiness-card">
@@ -3295,12 +3444,14 @@ function DashboardView({
 
 function CalendarView({
   bookings,
+  onViewBeo,
   selectedBookingId,
   setSelectedBookingId,
   setStatusFilter,
   statusFilter,
 }: {
   bookings: EventBooking[]
+  onViewBeo: (bookingId: string) => void
   selectedBookingId?: string
   setSelectedBookingId: (id: string) => void
   setStatusFilter: (status: BookingStatus | 'All') => void
@@ -3336,6 +3487,19 @@ function CalendarView({
     {},
   )
 
+  const visibleYear = monthStart.getFullYear()
+  const monthNames = Array.from({ length: 12 }, (_, index) =>
+    new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date(2000, index, 1)),
+  )
+  const bookingYears = bookings.map((booking) => Number(booking.date.slice(0, 4)))
+  const yearBounds = [...bookingYears, visibleYear, new Date().getFullYear()]
+  const minYear = Math.min(...yearBounds) - 1
+  const maxYear = Math.max(...yearBounds) + 2
+  const yearOptions = Array.from({ length: maxYear - minYear + 1 }, (_, index) => minYear + index)
+  const jumpToMonth = (year: number, monthIndex: number) => {
+    setVisibleMonth(toMonthKey(new Date(year, monthIndex, 1)))
+  }
+
   return (
     <div className="page-stack">
       <FilterBar setStatusFilter={setStatusFilter} statusFilter={statusFilter} />
@@ -3370,6 +3534,30 @@ function CalendarView({
             >
               <ChevronRight size={18} />
             </button>
+            <div className="calendar-jump">
+              <select
+                aria-label="Jump to month"
+                onChange={(event) => jumpToMonth(visibleYear, Number(event.target.value))}
+                value={visibleMonthNumber}
+              >
+                {monthNames.map((name, index) => (
+                  <option key={name} value={index}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Jump to year"
+                onChange={(event) => jumpToMonth(Number(event.target.value), visibleMonthNumber)}
+                value={visibleYear}
+              >
+                {yearOptions.map((year) => (
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -3432,9 +3620,18 @@ function CalendarView({
 
       {selectedBooking && (
         <section className="panel calendar-selection">
-          <PanelHeader title="Selected event" />
+          <PanelHeader
+            action="View BEO"
+            onAction={() => onViewBeo(selectedBooking.id)}
+            title={selectedBooking.eventName}
+          />
           <div className="selection-grid">
-            <Detail label="Event" value={selectedBooking.eventName} />
+            <div className="detail-item">
+              <dt>Current status</dt>
+              <dd>
+                <StatusBadge status={selectedBooking.status} />
+              </dd>
+            </div>
             <Detail label="Date" value={selectedBooking.date} />
             <Detail label="Time" value={`${selectedBooking.startTime}-${selectedBooking.endTime}`} />
             <Detail label="Venue" value={`${selectedBooking.venue}, ${selectedBooking.room}`} />
@@ -3466,28 +3663,68 @@ function emptyLead(): Lead {
 }
 
 function LeadDetailView({
+  canConvert,
   canDelete,
   canEdit,
   lead,
   onBack,
+  onConvert,
   onDelete,
+  onLogFollowUp,
   updateLead,
 }: {
+  canConvert: boolean
   canDelete: boolean
   canEdit: boolean
   lead: Lead
   onBack: () => void
+  onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
   onDelete: (id: string) => void
+  onLogFollowUp: (note: string) => void
   updateLead: <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => void
 }) {
   const [isEditing, setIsEditing] = useState(false)
+  const [followUp, setFollowUp] = useState('')
+  // Status changes are staged locally so an accidental click never commits: the
+  // draft only becomes real (and lands in history) when the user clicks Save.
+  // The parent remounts this view per lead (key={lead.id}), so the draft resets
+  // on lead switch; after a Save, lead.stage already equals the draft.
+  const [draftStage, setDraftStage] = useState<LeadStage>(lead.stage)
+  const hasStageChange = draftStage !== lead.stage
   const orderedHistory = [...(lead.history ?? [])].sort((first, second) =>
     first.timestamp.localeCompare(second.timestamp),
   )
 
+  const saveStage = () => {
+    if (hasStageChange) updateLead(lead.id, 'stage', draftStage)
+  }
+
+  // Called before any action that would otherwise discard a staged status change.
+  // OK = save the change, Cancel = drop it; either way the caller then proceeds.
+  const resolvePendingStage = () => {
+    if (!hasStageChange) return
+    if (
+      window.confirm(
+        `You changed the status to "${draftStage}" but haven't saved it.\n\n` +
+          'Click OK to save this change, or Cancel to discard it.',
+      )
+    ) {
+      updateLead(lead.id, 'stage', draftStage)
+    } else {
+      setDraftStage(lead.stage)
+    }
+  }
+
   return (
     <div className="page-stack">
-      <button className="text-action back-action" onClick={onBack} type="button">
+      <button
+        className="text-action back-action"
+        onClick={() => {
+          resolvePendingStage()
+          onBack()
+        }}
+        type="button"
+      >
         <ChevronLeft size={16} />
         Back to leads
       </button>
@@ -3495,28 +3732,86 @@ function LeadDetailView({
       <section className="panel">
         <div className="drawer-head">
           <div>
-            <p className="eyebrow">{lead.stage}</p>
+            <p className={`eyebrow lead-stage-eyebrow ${stageClass(lead.stage)}`}>{lead.stage}</p>
             <h2>
               {lead.name}
               {lead.company ? ` · ${lead.company}` : ''}
             </h2>
           </div>
           {(canEdit || canDelete) && (
-            <div className="card-actions">
-              {canEdit && (
-                <button
-                  className={isEditing ? 'secondary-action' : 'primary-action'}
-                  onClick={() => setIsEditing((current) => !current)}
-                  type="button"
-                >
-                  {isEditing ? 'Done' : 'Edit'}
-                </button>
+            <div className="drawer-head-actions">
+              {canEdit && !isEditing && (
+                <div className="lead-stage-control">
+                  <div className={`lead-stage-stepper ${hasStageChange ? 'is-dirty' : ''}`}>
+                    <button
+                      className="icon-button"
+                      disabled={draftStage === 'New' || draftStage === 'Lost'}
+                      onClick={() => setDraftStage((current) => previousLeadStage(current))}
+                      title="Fall back a stage"
+                      type="button"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                    <span className={`stage-pill ${stageClass(draftStage)}`}>{draftStage}</span>
+                    <button
+                      className="icon-button"
+                      disabled={draftStage === 'Won' || draftStage === 'Lost'}
+                      onClick={() => setDraftStage((current) => nextLeadStage(current))}
+                      title="Advance a stage"
+                      type="button"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                  {hasStageChange ? (
+                    <span className="lead-stage-hint">Unsaved — click Save</span>
+                  ) : draftStage === 'Lost' ? (
+                    <button
+                      className="text-action lead-stage-link"
+                      onClick={() => setDraftStage('New')}
+                      type="button"
+                    >
+                      Reopen lead
+                    </button>
+                  ) : (
+                    <button
+                      className="text-action lead-stage-link danger"
+                      onClick={() => setDraftStage('Lost')}
+                      type="button"
+                    >
+                      Mark as lost
+                    </button>
+                  )}
+                </div>
               )}
-              {canDelete && (
-                <button className="secondary-action" onClick={() => onDelete(lead.id)} type="button">
-                  Delete
-                </button>
-              )}
+              <div className="card-actions">
+                {canEdit &&
+                  (hasStageChange && !isEditing ? (
+                    <button className="primary-action" onClick={saveStage} type="button">
+                      Save
+                    </button>
+                  ) : (
+                    <button
+                      className={isEditing ? 'secondary-action' : 'primary-action'}
+                      onClick={() => setIsEditing((current) => !current)}
+                      type="button"
+                    >
+                      {isEditing ? 'Done' : 'Edit'}
+                    </button>
+                  ))}
+                {canDelete && (
+                  <button
+                    className="secondary-action"
+                    onClick={() => {
+                      resolvePendingStage()
+                      onDelete(lead.id)
+                    }}
+                    type="button"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -3589,9 +3884,10 @@ function LeadDetailView({
                 value={lead.estimatedValue}
               />
             </FormField>
-            <FormField label="Owner">
+            <FormField label="Responsible staff">
               <input
                 onChange={(event) => updateLead(lead.id, 'owner', event.target.value)}
+                placeholder="Employee responsible for this lead"
                 value={lead.owner}
               />
             </FormField>
@@ -3605,21 +3901,93 @@ function LeadDetailView({
         ) : (
           <>
             <div className="detail-grid">
+              <Detail label="Created" value={lead.createdAt} />
+              <Detail label="Last updated" value={leadLastUpdated(lead)} />
               <Detail label="Email" value={lead.email || 'Not set'} />
               <Detail label="Phone" value={lead.phone || 'Not set'} />
               <Detail label="Source" value={lead.source || 'Not set'} />
               <Detail label="Category" value={lead.category || 'Not set'} />
               <Detail label="Estimated value" value={money(lead.estimatedValue)} />
-              <Detail label="Owner" value={lead.owner || 'Unassigned'} />
+              <Detail label="Responsible staff" value={lead.owner || 'Unassigned'} />
               {lead.stage === 'Lost' && (
                 <Detail label="Lost reason" value={lead.lostReason || 'Not recorded'} />
               )}
-              <Detail label="Created" value={lead.createdAt} />
             </div>
             <div className="drawer-section">
               <h3>Notes</h3>
               <p>{lead.notes || 'No notes yet.'}</p>
             </div>
+            {(lead.followUps?.length ?? 0) > 0 && (
+              <div className="drawer-section">
+                <h3>Follow-up</h3>
+                <div className="follow-up-log">
+                  {(lead.followUps ?? []).map((entry: FollowUp) => (
+                    <div className="follow-up-entry" key={entry.id}>
+                      <span className="follow-up-date">{entry.timestamp}</span>
+                      <p>{entry.note}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {canEdit && (
+              <div className="drawer-section">
+                <h3>Log a follow-up</h3>
+                <div className="follow-up-form">
+                  <textarea
+                    onChange={(event) => setFollowUp(event.target.value)}
+                    placeholder="Record a call, email, or next step for this lead…"
+                    value={followUp}
+                  />
+                  <button
+                    className="primary-action"
+                    disabled={!followUp.trim()}
+                    onClick={() => {
+                      onLogFollowUp(followUp)
+                      setFollowUp('')
+                    }}
+                    type="button"
+                  >
+                    Update
+                  </button>
+                </div>
+              </div>
+            )}
+            {canConvert && (
+              <div className="lead-convert">
+                <div className="lead-convert-copy">
+                  <strong>Convert this lead</strong>
+                  <span>
+                    Carry the details across to a booking or proposal — you only fill in
+                    what's missing.
+                  </span>
+                </div>
+                <div className="lead-convert-actions">
+                  <button
+                    className="secondary-action"
+                    onClick={() => {
+                      resolvePendingStage()
+                      onConvert(lead, 'proposal')
+                    }}
+                    type="button"
+                  >
+                    <FileText size={17} />
+                    Convert to proposal
+                  </button>
+                  <button
+                    className="primary-action"
+                    onClick={() => {
+                      resolvePendingStage()
+                      onConvert(lead, 'booking')
+                    }}
+                    type="button"
+                  >
+                    <BookOpenCheck size={17} />
+                    Convert to booking
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
       </section>
@@ -3645,15 +4013,18 @@ function LeadDetailView({
 function LeadsView({
   account,
   leads,
+  onConvert,
   setLeads,
 }: {
   account: LoginSession
   leads: Lead[]
+  onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
 }) {
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const canCreate = hasPermission(account.role, 'leads:create')
   const canEdit = hasPermission(account.role, 'leads:edit')
+  const canConvert = hasPermission(account.role, 'booking:create')
   const canDelete = hasPermission(account.role, 'leads:delete')
   const getLeadDate = (lead: Lead) => lead.createdAt
   const availableMonths = availableMonthsOf(leads, getLeadDate)
@@ -3674,23 +4045,54 @@ function LeadsView({
     selectedYear,
   )
 
+  const actorName = account.displayName.trim() || account.email || 'A team member'
+
   const updateLead = <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => {
     setLeads((current) =>
       current.map((lead) => {
         if (lead.id !== id) return lead
-        const next = { ...lead, [field]: value }
+        const next = { ...lead, [field]: value, updatedAt: toDateKey(new Date()) }
         if (field === 'stage' && lead.stage !== value) {
           next.history = [
             ...(lead.history ?? []),
             {
               id: `HIST-${Date.now()}`,
               timestamp: toDateKey(new Date()),
-              note: `Stage changed from ${lead.stage} to ${value as LeadStage}`,
+              note: `Stage changed from ${lead.stage} to ${value as LeadStage} by ${actorName}`,
             },
           ]
         }
         return next
       }),
+    )
+  }
+
+  const logFollowUp = (id: string, note: string) => {
+    const trimmed = note.trim()
+    if (!trimmed) return
+    const stamp = toDateKey(new Date())
+    const entryId = `FUP-${Date.now()}`
+    setLeads((current) =>
+      current.map((lead) =>
+        lead.id === id
+          ? {
+              ...lead,
+              updatedAt: stamp,
+              followUps: [
+                ...(lead.followUps ?? []),
+                { id: entryId, timestamp: stamp, note: trimmed, author: actorName },
+              ],
+              history: [
+                ...(lead.history ?? []),
+                {
+                  id: `HIST-${Date.now()}`,
+                  timestamp: stamp,
+                  note: `Follow-up logged by ${actorName}: ${trimmed}`,
+                },
+              ],
+            }
+          : lead,
+      ),
     )
   }
 
@@ -3711,11 +4113,15 @@ function LeadsView({
   if (selectedLead) {
     return (
       <LeadDetailView
+        canConvert={canConvert}
         canDelete={canDelete}
         canEdit={canEdit}
+        key={selectedLead.id}
         lead={selectedLead}
         onBack={() => setSelectedLeadId(null)}
+        onConvert={onConvert}
         onDelete={deleteLead}
+        onLogFollowUp={(note) => logFollowUp(selectedLead.id, note)}
         updateLead={updateLead}
       />
     )
@@ -3745,7 +4151,7 @@ function LeadsView({
           <div className="pipeline-board">
             {visibleLeads.map((lead) => (
               <button
-                className="opportunity-card"
+                className={`opportunity-card ${stageClass(lead.stage)}`}
                 key={lead.id}
                 onClick={() => setSelectedLeadId(lead.id)}
                 type="button"
@@ -3775,7 +4181,7 @@ function LeadsView({
           <div className="banner-list">
             {visibleLeads.map((lead) => (
               <button
-                className="banner-row"
+                className={`banner-row ${stageClass(lead.stage)}`}
                 key={lead.id}
                 onClick={() => setSelectedLeadId(lead.id)}
                 type="button"

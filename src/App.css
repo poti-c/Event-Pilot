@@ -855,6 +855,31 @@ span.status-badge {
   color: var(--muted);
 }
 
+/* Lead pipeline stages each carry a distinct hue via --stage, so the eyebrow
+   label and the progress "status bar" on a card always read the same color. */
+.stage-tone-new {
+  --stage: #5a6b82;
+}
+.stage-tone-contacted {
+  --stage: #2f80c2;
+}
+.stage-tone-qualified {
+  --stage: #9b5a09;
+}
+.stage-tone-proposal-sent {
+  --stage: #6b4bab;
+}
+.stage-tone-won {
+  --stage: #127457;
+}
+.stage-tone-lost {
+  --stage: #a43a3a;
+}
+
+.lead-stage-eyebrow {
+  color: var(--stage, var(--muted));
+}
+
 .forecast-card {
   display: grid;
   place-items: center;
@@ -1349,6 +1374,11 @@ span.status-badge {
   grid-template-rows: auto minmax(40px, auto);
 }
 
+/* Separate the Cancel / Save row from the last field of an edit form. */
+.plan-edit-form + .card-actions {
+  margin-top: 18px;
+}
+
 .admin-plan-note,
 .expansion-pack-card {
   display: grid;
@@ -1521,6 +1551,32 @@ span.status-badge {
   gap: 8px;
 }
 
+.calendar-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.calendar-jump select {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.calendar-jump select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
+}
+
 .weekday-row,
 .month-grid {
   display: grid;
@@ -1550,6 +1606,12 @@ span.status-badge {
   border-right: 0;
 }
 
+.weekday-row span:nth-child(6),
+.weekday-row span:nth-child(7) {
+  background: color-mix(in srgb, var(--surface-soft) 55%, var(--border));
+  color: var(--text);
+}
+
 .month-grid {
   overflow: hidden;
   border: 1px solid var(--border);
@@ -1575,6 +1637,11 @@ span.status-badge {
 
 .calendar-cell:nth-last-child(-n + 7) {
   border-bottom: 0;
+}
+
+.calendar-cell:nth-child(7n - 1),
+.calendar-cell:nth-child(7n) {
+  background: color-mix(in srgb, var(--surface-soft) 60%, var(--surface));
 }
 
 .calendar-cell.outside-month {
@@ -1930,6 +1997,160 @@ span.status-badge {
 .status-actions .primary-action,
 .status-actions .secondary-action {
   width: 100%;
+}
+
+/* Compact lead stage control shares one row with Edit/Delete in the header:
+   [<][Stage][>] [Mark as lost]    [Edit][Delete] */
+.drawer-head-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 20px;
+}
+
+.lead-stage-control {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.lead-stage-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.lead-stage-stepper.is-dirty {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.lead-stage-hint {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.lead-stage-stepper .icon-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+
+.lead-stage-stepper .icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.stage-pill {
+  min-width: 116px;
+  text-align: center;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--stage, var(--accent));
+  background: color-mix(in srgb, var(--stage, var(--accent)) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--stage, var(--accent)) 34%, var(--border));
+}
+
+.lead-stage-link {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lead-stage-link.danger {
+  color: var(--danger);
+}
+
+.lead-convert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 4px 0 6px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.lead-convert-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lead-convert-copy strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.lead-convert-copy span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lead-convert-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.follow-up-log {
+  display: grid;
+  gap: 8px;
+}
+
+.follow-up-entry {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  padding: 2px 0 2px 12px;
+}
+
+.follow-up-entry .follow-up-date {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.follow-up-entry p {
+  color: var(--text);
+}
+
+.follow-up-form {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+}
+
+.follow-up-form textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.follow-up-form textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
 }
 
 .document-list {
@@ -2384,7 +2605,7 @@ button.opportunity-card {
 }
 
 .banner-status {
-  color: var(--accent);
+  color: var(--stage, var(--accent));
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
@@ -2490,7 +2711,7 @@ button.opportunity-card {
 
 .opportunity-card > span,
 .resource-head > span {
-  color: var(--accent);
+  color: var(--stage, var(--accent));
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
@@ -2509,7 +2730,7 @@ button.opportunity-card {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent);
+  background: var(--stage, var(--accent));
 }
 
 .card-foot,
