@@ -2228,6 +2228,91 @@ span.status-badge {
   gap: 14px;
 }
 
+/* Per-department instructions + acknowledgement on the BEO. */
+.department-instruction-list {
+  display: grid;
+  gap: 12px;
+}
+
+.department-instruction {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.department-instruction.is-mine {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  background: var(--surface);
+}
+
+.department-instruction-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.department-instruction-head strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.department-instruction p {
+  color: var(--text);
+  font-size: 13px;
+  margin: 0;
+}
+
+.department-instruction textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.department-instruction textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
+}
+
+.department-instruction .primary-action {
+  justify-self: start;
+}
+
+.dept-ack {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dept-ack.ok {
+  color: var(--success);
+}
+
+.dept-ack.pending {
+  color: var(--muted);
+}
+
+.dept-ack-note {
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .beo-readiness-head h3 {
   margin: 4px 0 0;
 }
@@ -2463,6 +2548,43 @@ span.status-badge {
 .line-items-editor > .secondary-action {
   justify-self: start;
   margin-top: 4px;
+}
+
+.line-items-actions {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.catalog-add {
+  display: grid;
+  gap: 4px;
+  min-width: 240px;
+}
+
+.catalog-add > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.catalog-add select {
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.catalog-add select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
 }
 
 button.opportunity-card {
@@ -2707,6 +2829,127 @@ button.opportunity-card {
   display: grid;
   gap: 12px;
   padding: 16px;
+}
+
+/* Grouped catalogue sections on the Packages & Products page. */
+.package-sections {
+  display: grid;
+  gap: 26px;
+}
+
+.package-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.package-section-head h3 {
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.package-section-head > span {
+  min-width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.package-section-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.inclusion-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inclusion-list li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.inclusion-list li svg {
+  margin-top: 2px;
+  color: var(--success);
+}
+
+.tier-select {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.tier-select label {
+  display: grid;
+  gap: 4px;
+}
+
+.tier-select label > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.tier-select select {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.tier-select select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
+}
+
+.tier-price {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tier-price strong {
+  color: var(--text-strong);
+  font-size: 18px;
+}
+
+.tier-price span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resource-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .opportunity-card > span,

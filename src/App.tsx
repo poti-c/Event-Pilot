@@ -6,6 +6,7 @@ import {
   Boxes,
   Building2,
   CalendarDays,
+  Check,
   CheckCircle2,
   CheckSquare,
   ChevronLeft,
@@ -49,6 +50,7 @@ import {
 import type { ConsoleSession } from './consoleClient'
 import {
   accounts,
+  BEO_DEPARTMENTS,
   initialBookings,
   leads as initialLeads,
   naNirandProfile,
@@ -61,6 +63,7 @@ import type {
   Account,
   BookingStatus,
   Discount,
+  BeoDepartment,
   DiscountMode,
   EventBooking,
   FollowUp,
@@ -122,6 +125,10 @@ const NAV_ACTION: Partial<Record<ModuleId, Action>> = {
 }
 
 function visibleNavItems(role: AuthRole): NavItem[] {
+  // Department viewers only ever see the calendar and the BEOs they sign off on.
+  if (role === 'beo_viewer') {
+    return navItems.filter((item) => item.id === 'Calendar' || item.id === 'BEOs')
+  }
   return navItems.filter((item) => {
     const action = NAV_ACTION[item.id]
     return !action || hasPermission(role, action)
@@ -1088,7 +1095,10 @@ type AdminCredentialSettings = {
 }
 
 /** Three-tier authority model, mirroring the Kaizen System. */
-type AuthRole = 'top_management' | 'manager' | 'staff'
+// top_management/manager/staff are the real Supabase tiers. 'beo_viewer' is an
+// app-layer, view-only department sign-in (no Supabase account) that can only
+// see BEOs + the calendar and acknowledge its own department's instructions.
+type AuthRole = 'top_management' | 'manager' | 'staff' | 'beo_viewer'
 
 type LoginSession = {
   authenticated: boolean
@@ -1096,14 +1106,19 @@ type LoginSession = {
   displayName: string
   workspaceCode: string
   role: AuthRole
+  department?: BeoDepartment
 }
 
+// The three real Supabase tiers (used for profile validation + user management).
 const AUTH_ROLES: AuthRole[] = ['top_management', 'manager', 'staff']
+// Roles offered on the sign-in screen — the tiers plus the department viewer.
+const LOGIN_ROLES: AuthRole[] = [...AUTH_ROLES, 'beo_viewer']
 
 const ROLE_LABELS: Record<AuthRole, { en: string; th: string }> = {
   top_management: { en: 'Top Management', th: 'ผู้บริหารระดับสูง' },
   manager: { en: 'Managers', th: 'ผู้จัดการ' },
   staff: { en: 'Staff', th: 'พนักงาน' },
+  beo_viewer: { en: 'Department (BEO)', th: 'แผนก (BEO)' },
 }
 
 /**
@@ -1151,6 +1166,9 @@ const MANAGER_ONLY_ADDITIONS: Action[] = [
 const TOP_MANAGEMENT_ONLY_ADDITIONS: Action[] = ['packages:edit', 'admin:settings', 'admin:userManagement']
 
 const PERMISSIONS: Record<AuthRole, Set<Action>> = {
+  // Department viewers are view-only: no gated actions. Their nav is handled
+  // explicitly in visibleNavItems (BEOs + calendar only).
+  beo_viewer: new Set(),
   staff: new Set(STAFF_ACTIONS),
   manager: new Set([...STAFF_ACTIONS, ...MANAGER_ONLY_ADDITIONS]),
   top_management: new Set([
@@ -1333,19 +1351,24 @@ function App() {
   const auth = useSupabaseAuth()
   // Offline sandbox session (used only when Supabase is not configured).
   const [localSession, setLocalSession] = useState<LoginSession>(initialLoginSession)
+  // App-layer department (BEO viewer) session. It bypasses Supabase entirely and
+  // takes precedence over the tier session, so it works even when Supabase is on.
+  const [departmentSession, setDepartmentSession] = useState<LoginSession | null>(null)
   // Vendor console session — entirely independent of the customer auth above.
   const [consoleSession, setConsoleSession] = useState<ConsoleSession | null>(null)
   const [consoleReady, setConsoleReady] = useState(!isAdminRoute)
   const userId = auth.userId
-  const loginSession: LoginSession = isSupabaseEnabled
-    ? {
-        authenticated: !!auth.userId,
-        email: auth.email,
-        displayName: auth.displayName,
-        workspaceCode: auth.workspaceCode,
-        role: auth.role,
-      }
-    : localSession
+  const loginSession: LoginSession = departmentSession
+    ? departmentSession
+    : isSupabaseEnabled
+      ? {
+          authenticated: !!auth.userId,
+          email: auth.email,
+          displayName: auth.displayName,
+          workspaceCode: auth.workspaceCode,
+          role: auth.role,
+        }
+      : localSession
 
   const [bookings, setBookings] = useSyncedState(
     'eventpilot.bookings.v2',
@@ -1627,6 +1650,46 @@ function App() {
     )
   }
 
+  const updateDepartmentInstruction = (
+    bookingId: string,
+    dept: BeoDepartment,
+    text: string,
+  ) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              departmentInstructions: { ...booking.departmentInstructions, [dept]: text },
+              // Editing an instruction clears that department's stale acknowledgement.
+              departmentAcks: (() => {
+                const next = { ...booking.departmentAcks }
+                delete next[dept]
+                return next
+              })(),
+            }
+          : booking,
+      ),
+    )
+  }
+
+  const acknowledgeDepartment = (bookingId: string, dept: BeoDepartment, by: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              departmentAcks: {
+                ...booking.departmentAcks,
+                [dept]: { by, at: toDateKey(new Date()) },
+              },
+            }
+          : booking,
+      ),
+    )
+    appendBeoHistory(bookingId, `${dept} acknowledged the BEO instructions (${by})`)
+  }
+
   const appendDocumentHistory = (bookingId: string, note: string) => {
     setBookings((currentBookings) =>
       currentBookings.map((booking) =>
@@ -1781,7 +1844,24 @@ function App() {
     identifier: string,
     password: string,
     workspaceCode: string,
+    department?: BeoDepartment,
   ): Promise<string | null> => {
+    // Department viewers never touch Supabase — they get a local, view-only
+    // session scoped to a single BEO department.
+    if (role === 'beo_viewer') {
+      if (!department) return 'Please choose your department.'
+      setDepartmentSession({
+        authenticated: true,
+        email: '',
+        displayName: identifier.trim(),
+        workspaceCode: workspaceCode.trim(),
+        role: 'beo_viewer',
+        department,
+      })
+      setActiveModule('BEOs')
+      return null
+    }
+
     const email =
       role === 'staff' ? staffEmail(identifier, workspaceCode) : identifier.trim()
 
@@ -1877,7 +1957,9 @@ function App() {
   }
 
   const handleLogout = async () => {
-    if (isSupabaseEnabled && supabase) {
+    if (departmentSession) {
+      setDepartmentSession(null)
+    } else if (isSupabaseEnabled && supabase) {
       await supabase.auth.signOut()
     } else {
       setLocalSession(initialLoginSession)
@@ -2136,12 +2218,15 @@ function App() {
           {activeModule === 'BEOs' &&
             (beoViewBooking ? (
               <BeoView
+                acknowledgeDepartment={acknowledgeDepartment}
                 appendBeoHistory={appendBeoHistory}
                 booking={beoViewBooking}
                 markBeoRevised={markBeoRevised}
                 markClientApproved={markClientApproved}
                 onBack={() => setBeoViewBookingId(null)}
                 propertyProfile={propertyProfile}
+                session={loginSession}
+                updateDepartmentInstruction={updateDepartmentInstruction}
               />
             ) : (
               <BeoListView
@@ -2159,6 +2244,7 @@ function App() {
                 account={loginSession}
                 appendDocumentHistory={appendDocumentHistory}
                 booking={proposalViewBooking}
+                catalog={products}
                 documentType="Proposals"
                 onBack={() => setProposalViewBookingId(null)}
                 onOpenBeo={() => {
@@ -2185,6 +2271,7 @@ function App() {
                 account={loginSession}
                 appendDocumentHistory={appendDocumentHistory}
                 booking={invoiceViewBooking}
+                catalog={products}
                 documentType="Invoices"
                 onBack={() => setInvoiceViewBookingId(null)}
                 onOpenBeo={() => {
@@ -2263,6 +2350,8 @@ const LOGIN_COPY: Record<
     usernamePlaceholder: string
     password: string
     workspaceCode: string
+    department: string
+    departmentPlaceholder: string
     required: string
     clientPasswordPlaceholder: string
     adminPasswordPlaceholder: string
@@ -2284,6 +2373,8 @@ const LOGIN_COPY: Record<
     usernamePlaceholder: 'Staff username',
     password: 'Password',
     workspaceCode: 'Workspace code',
+    department: 'Department',
+    departmentPlaceholder: 'Select your department',
     required: 'Required',
     clientPasswordPlaceholder: 'Client password',
     adminPasswordPlaceholder: 'Admin password',
@@ -2304,6 +2395,8 @@ const LOGIN_COPY: Record<
     usernamePlaceholder: 'ชื่อผู้ใช้พนักงาน',
     password: 'รหัสผ่าน',
     workspaceCode: 'รหัสพื้นที่ทำงาน',
+    department: 'แผนก',
+    departmentPlaceholder: 'เลือกแผนกของคุณ',
     required: 'จำเป็น',
     clientPasswordPlaceholder: 'รหัสผ่านลูกค้า',
     adminPasswordPlaceholder: 'รหัสผ่านผู้ดูแล',
@@ -2322,6 +2415,7 @@ function LoginView({
     identifier: string,
     password: string,
     workspaceCode: string,
+    department?: BeoDepartment,
   ) => Promise<string | null>
 }) {
   const [role, setRole] = useState<AuthRole>('top_management')
@@ -2329,15 +2423,19 @@ function LoginView({
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [workspaceCode, setWorkspaceCode] = useState('')
+  const [department, setDepartment] = useState<BeoDepartment | ''>('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [lang, setLang] = useState<LoginLang>('en')
   const t = LOGIN_COPY[lang]
   const isStaff = role === 'staff'
+  const isDepartment = role === 'beo_viewer'
+  // Staff and department viewers both sign in with a workspace code + username.
+  const usesWorkspace = isStaff || isDepartment
   const minPasswordLength = 8
   const passwordReady = password.length >= minPasswordLength
-  const identifierReady = isStaff
-    ? username.trim() && workspaceCode.trim()
+  const identifierReady = usesWorkspace
+    ? username.trim() && workspaceCode.trim() && (!isDepartment || department)
     : email.includes('@')
   const loginReady = Boolean(identifierReady) && passwordReady && !submitting
 
@@ -2349,6 +2447,7 @@ function LoginView({
     setUsername('')
     setPassword('')
     setWorkspaceCode('')
+    setDepartment('')
     setError('')
   }
 
@@ -2364,9 +2463,10 @@ function LoginView({
     setSubmitting(true)
     const failure = await onSubmit(
       role,
-      isStaff ? username : email,
+      usesWorkspace ? username : email,
       password,
       workspaceCode,
+      isDepartment && department ? department : undefined,
     )
     setSubmitting(false)
     if (failure) {
@@ -2418,7 +2518,7 @@ function LoginView({
         </div>
 
         <div className="login-role-tabs" role="tablist" aria-label={t.roleGroupLabel}>
-          {AUTH_ROLES.map((r) => (
+          {LOGIN_ROLES.map((r) => (
             <button
               aria-selected={role === r}
               className={role === r ? 'is-active' : ''}
@@ -2433,7 +2533,7 @@ function LoginView({
         </div>
 
         <form className="login-form" onSubmit={submitLogin}>
-          {isStaff ? (
+          {usesWorkspace ? (
             <>
               <FormField label={t.workspaceCode} requiredLabel={t.required} required>
                 <input
@@ -2454,6 +2554,22 @@ function LoginView({
                   value={username}
                 />
               </FormField>
+              {isDepartment && (
+                <FormField label={t.department} requiredLabel={t.required} required>
+                  <select
+                    onChange={(event) => setDepartment(event.target.value as BeoDepartment | '')}
+                    required
+                    value={department}
+                  >
+                    <option value="">{t.departmentPlaceholder}</option>
+                    {BEO_DEPARTMENTS.map((dept) => (
+                      <option key={dept} value={dept}>
+                        {dept}
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
+              )}
             </>
           ) : (
             <FormField label={t.email} requiredLabel={t.required} required>
@@ -2471,7 +2587,7 @@ function LoginView({
               autoComplete="current-password"
               onChange={(event) => setPassword(event.target.value)}
               placeholder={
-                isStaff ? t.staffPasswordPlaceholder : t.clientPasswordPlaceholder
+                usesWorkspace ? t.staffPasswordPlaceholder : t.clientPasswordPlaceholder
               }
               required
               type="password"
@@ -2687,9 +2803,20 @@ function NewBookingView({
   }
   const selectedAccount = accounts.find((account) => account.name === form.account)
   const selectedVenue = venues.find((venue) => venue.name === form.venue)
-  const packageOptions = products
-    .filter((product) => product.category === 'Package')
-    .map((product) => product.name)
+  // The Package / product field references the whole catalogue; picking a
+  // fixed-price wedding package also seeds the forecast revenue.
+  const packageOptions = products.map((product) => product.name)
+  const selectPackage = (value: string) => {
+    const match = products.find((product) => product.name === value)
+    setForm((current) => ({
+      ...current,
+      packageName: value,
+      forecastRevenue:
+        match && match.category === 'Package' && match.price != null && !current.forecastRevenue
+          ? String(match.price)
+          : current.forecastRevenue,
+    }))
+  }
   const expectedGuests = Number(form.expectedGuests) || 0
   const guaranteedGuests = Number(form.guaranteedGuests) || expectedGuests
   const forecastRevenue = Number(form.forecastRevenue) || 0
@@ -3002,7 +3129,7 @@ function NewBookingView({
               <FormField label="Package / product" required>
                 <input
                   list="package-options"
-                  onChange={(event) => updateField('packageName', event.target.value)}
+                  onChange={(event) => selectPackage(event.target.value)}
                   required
                   value={form.packageName}
                 />
@@ -4643,20 +4770,29 @@ function BeoListView({
 }
 
 function BeoView({
+  acknowledgeDepartment,
   appendBeoHistory,
   booking,
   markBeoRevised,
   markClientApproved,
   onBack,
   propertyProfile,
+  session,
+  updateDepartmentInstruction,
 }: {
+  acknowledgeDepartment: (bookingId: string, dept: BeoDepartment, by: string) => void
   appendBeoHistory: (bookingId: string, note: string) => void
   booking: EventBooking
   markBeoRevised: (bookingId: string) => void
   markClientApproved: (bookingId: string) => void
   onBack: () => void
   propertyProfile: PropertyProfile
+  session: LoginSession
+  updateDepartmentInstruction: (bookingId: string, dept: BeoDepartment, text: string) => void
 }) {
+  const isDepartmentViewer = session.role === 'beo_viewer'
+  const canEditInstructions = hasPermission(session.role, 'proposal:edit')
+  const viewerName = session.displayName.trim() || 'Department user'
   const beoHistory = [...(booking.beoHistory ?? [])].sort((first, second) =>
     first.timestamp.localeCompare(second.timestamp),
   )
@@ -4942,14 +5078,16 @@ function BeoView({
               <Download size={16} />
               View PDF
             </button>
-            <button
-              className="primary-action"
-              onClick={() => markBeoRevised(booking.id)}
-              type="button"
-            >
-              <RefreshCcw size={16} />
-              Mark revised
-            </button>
+            {!isDepartmentViewer && (
+              <button
+                className="primary-action"
+                onClick={() => markBeoRevised(booking.id)}
+                type="button"
+              >
+                <RefreshCcw size={16} />
+                Mark revised
+              </button>
+            )}
           </div>
         </div>
 
@@ -4974,6 +5112,72 @@ function BeoView({
                 </div>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="beo-control-panel beo-departments no-print">
+          <div className="beo-readiness-head">
+            <div>
+              <p className="eyebrow">Department instructions</p>
+              <h3>
+                {isDepartmentViewer
+                  ? `${session.department} sign-off`
+                  : 'Sign-off by responsible department'}
+              </h3>
+            </div>
+            <strong>
+              {BEO_DEPARTMENTS.filter((dept) => booking.departmentAcks?.[dept]).length}/
+              {BEO_DEPARTMENTS.length} acknowledged
+            </strong>
+          </div>
+          <div className="department-instruction-list">
+            {BEO_DEPARTMENTS.map((dept) => {
+              const instruction = booking.departmentInstructions?.[dept] ?? ''
+              const ack = booking.departmentAcks?.[dept]
+              const isMine = isDepartmentViewer && session.department === dept
+              return (
+                <div
+                  className={`department-instruction${isMine ? ' is-mine' : ''}`}
+                  key={dept}
+                >
+                  <div className="department-instruction-head">
+                    <strong>{dept}</strong>
+                    {ack ? (
+                      <span className="dept-ack ok">
+                        <CheckCircle2 size={14} />
+                        Acknowledged by {ack.by} · {ack.at}
+                      </span>
+                    ) : (
+                      <span className="dept-ack pending">Awaiting acknowledgement</span>
+                    )}
+                  </div>
+                  {canEditInstructions ? (
+                    <textarea
+                      onChange={(event) =>
+                        updateDepartmentInstruction(booking.id, dept, event.target.value)
+                      }
+                      placeholder={`What does the client need from ${dept}?`}
+                      value={instruction}
+                    />
+                  ) : (
+                    <p>{instruction || 'No specific instructions for this department.'}</p>
+                  )}
+                  {isMine && instruction && !ack && (
+                    <button
+                      className="primary-action"
+                      onClick={() => acknowledgeDepartment(booking.id, dept, viewerName)}
+                      type="button"
+                    >
+                      <CheckCircle2 size={16} />
+                      Acknowledge instructions
+                    </button>
+                  )}
+                  {isMine && ack && (
+                    <span className="dept-ack-note">You acknowledged this on {ack.at}.</span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </section>
 
@@ -5003,10 +5207,12 @@ function BeoView({
 }
 
 function LineItemsEditor({
+  catalog = [],
   editable,
   lineItems,
   onChange,
 }: {
+  catalog?: Product[]
   editable: boolean
   lineItems: LineItem[]
   onChange: (next: LineItem[]) => void
@@ -5020,9 +5226,29 @@ function LineItemsEditor({
       { id: `LI-${Date.now()}`, description: '', quantity: 1, unitPrice: 0 },
     ])
   }
+  const addFromCatalog = (productId: string) => {
+    const product = catalog.find((item) => item.id === productId)
+    if (!product) return
+    // Tiered items store the first tier in `price`; fall back to the tier list.
+    const unitPrice = product.price ?? product.priceTiers?.[0]?.price ?? 0
+    onChange([
+      ...lineItems,
+      { id: `LI-${Date.now()}`, description: product.name, quantity: 1, unitPrice },
+    ])
+  }
   const removeItem = (id: string) => {
     onChange(lineItems.filter((item) => item.id !== id))
   }
+  // Group catalog options by category, preserving the seed order.
+  const catalogGroups = catalog.reduce<{ category: string; items: Product[] }[]>(
+    (groups, product) => {
+      const group = groups.find((entry) => entry.category === product.category)
+      if (group) group.items.push(product)
+      else groups.push({ category: product.category, items: [product] })
+      return groups
+    },
+    [],
+  )
 
   return (
     <div className="line-items-editor">
@@ -5079,10 +5305,38 @@ function LineItemsEditor({
         </div>
       ))}
       {editable && (
-        <button className="secondary-action" onClick={addItem} type="button">
-          <Plus size={14} />
-          Add item
-        </button>
+        <div className="line-items-actions">
+          <button className="secondary-action" onClick={addItem} type="button">
+            <Plus size={14} />
+            Add item
+          </button>
+          {catalogGroups.length > 0 && (
+            <label className="catalog-add">
+              <span>Add from catalog</span>
+              <select
+                onChange={(event) => {
+                  if (event.target.value) addFromCatalog(event.target.value)
+                  event.target.selectedIndex = 0
+                }}
+                value=""
+              >
+                <option value="">Select a package or item…</option>
+                {catalogGroups.map((group) => (
+                  <optgroup key={group.category} label={group.category}>
+                    {group.items.map((product) => {
+                      const unitPrice = product.price ?? product.priceTiers?.[0]?.price ?? 0
+                      return (
+                        <option key={product.id} value={product.id}>
+                          {product.name} — {money(unitPrice)}
+                        </option>
+                      )
+                    })}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       )}
     </div>
   )
@@ -5264,6 +5518,7 @@ function DocumentsView({
   account,
   appendDocumentHistory,
   booking,
+  catalog,
   documentType,
   onBack,
   onOpenBeo,
@@ -5273,6 +5528,7 @@ function DocumentsView({
   account: LoginSession
   appendDocumentHistory: (bookingId: string, note: string) => void
   booking: EventBooking
+  catalog: Product[]
   documentType: 'Proposals' | 'Invoices'
   onBack: () => void
   onOpenBeo: () => void
@@ -5340,6 +5596,7 @@ function DocumentsView({
 
         <PaperSection title="Line items">
           <LineItemsEditor
+            catalog={catalog}
             editable={isEditing}
             lineItems={lineItems}
             onChange={handleLineItemsChange}
@@ -5647,6 +5904,15 @@ function ProductDetailView({
   )
 }
 
+// The catalogue is grouped into these sections; each maps one or more product
+// categories to a heading, in display order. Anything unmatched falls to "Other".
+const PACKAGE_SECTIONS: { title: string; categories: string[] }[] = [
+  { title: 'Wedding Packages', categories: ['Package'] },
+  { title: 'Venue Rental Fees', categories: ['Venue rental'] },
+  { title: 'Food & Beverage Packages', categories: ['Food & Beverage', 'Beverage'] },
+  { title: 'Additional Services', categories: ['Add-on service'] },
+]
+
 function ProductsView({
   account,
   products,
@@ -5657,6 +5923,8 @@ function ProductsView({
   setProducts: (next: Product[] | ((current: Product[]) => Product[])) => void
 }) {
   const [viewingProductId, setViewingProductId] = useState<string | null>(null)
+  // Which price tier is highlighted per product (quoting reference only).
+  const [tierByProduct, setTierByProduct] = useState<Record<string, number>>({})
   const canEdit = hasPermission(account.role, 'packages:edit')
 
   const createProduct = () => {
@@ -5689,59 +5957,121 @@ function ProductsView({
     )
   }
 
+  const knownCategories = new Set(PACKAGE_SECTIONS.flatMap((section) => section.categories))
+  const sections = PACKAGE_SECTIONS.map((section) => ({
+    title: section.title,
+    items: products.filter((product) => section.categories.includes(product.category)),
+  })).filter((section) => section.items.length > 0)
+  const otherItems = products.filter((product) => !knownCategories.has(product.category))
+  if (otherItems.length) sections.push({ title: 'Other', items: otherItems })
+
+  const renderCard = (product: Product) => {
+    const tiers = product.priceTiers ?? []
+    const selectedTier = tiers.length ? Math.min(tierByProduct[product.id] ?? 0, tiers.length - 1) : 0
+    return (
+      <article className="resource-card" key={product.id}>
+        <div className="resource-head">
+          <span>{product.category}</span>
+          <strong>{product.name}</strong>
+        </div>
+        {product.description && <p>{product.description}</p>}
+        {product.inclusions && product.inclusions.length > 0 && (
+          <ul className="inclusion-list">
+            {product.inclusions.map((item, index) => (
+              <li key={index}>
+                <Check size={14} />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {tiers.length > 0 ? (
+          <div className="tier-select">
+            <label>
+              <span>Choose option</span>
+              <select
+                onChange={(event) =>
+                  setTierByProduct((current) => ({
+                    ...current,
+                    [product.id]: Number(event.target.value),
+                  }))
+                }
+                value={selectedTier}
+              >
+                {tiers.map((tier, index) => (
+                  <option key={index} value={index}>
+                    {tier.label ? `${tier.label} — ${money(tier.price)}` : money(tier.price)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="tier-price">
+              <strong>{money(tiers[selectedTier].price)}</strong>
+              <span>{product.unit}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="resource-meta">
+            <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
+            <span>{product.unit}</span>
+            <span>{product.availability}</span>
+          </div>
+        )}
+        {tiers.length > 0 && product.availability && product.availability !== 'Available' && (
+          <p className="resource-note">{product.availability}</p>
+        )}
+        <TagList items={product.tags} />
+        {product.sourceUrl && (
+          <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
+            <ExternalLink size={14} />
+            Source page
+          </a>
+        )}
+        <div className="toggle-row">
+          <span>Show on BEO</span>
+          <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
+        </div>
+        {canEdit && (
+          <div className="card-actions">
+            <button
+              className="primary-action"
+              onClick={() => setViewingProductId(product.id)}
+              type="button"
+            >
+              Edit
+            </button>
+            <button
+              className="secondary-action"
+              onClick={() => deleteProduct(product.id)}
+              type="button"
+            >
+              Delete
+            </button>
+          </div>
+        )}
+      </article>
+    )
+  }
+
   return (
     <div className="page-stack">
       <section className="panel">
         <PanelHeader
           action={canEdit ? 'New package' : undefined}
           onAction={canEdit ? createProduct : undefined}
-          title="Packages"
+          title="Packages & Products"
         />
-        <div className="resource-grid">
-          {products.map((product) => (
-            <article className="resource-card" key={product.id}>
-              <div className="resource-head">
-                <span>{product.category}</span>
-                <strong>{product.name}</strong>
+        {!products.length && <p>No packages yet.</p>}
+        <div className="package-sections">
+          {sections.map((section) => (
+            <div className="package-section" key={section.title}>
+              <div className="package-section-head">
+                <h3>{section.title}</h3>
+                <span>{section.items.length}</span>
               </div>
-              <p>{product.description}</p>
-              <div className="resource-meta">
-                <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
-                <span>{product.unit}</span>
-                <span>{product.availability}</span>
-              </div>
-              <TagList items={product.tags} />
-              {product.sourceUrl && (
-                <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
-                  <ExternalLink size={14} />
-                  Source page
-                </a>
-              )}
-              <div className="toggle-row">
-                <span>Show on BEO</span>
-                <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
-              </div>
-              {canEdit && (
-                <div className="card-actions">
-                  <button
-                    className="primary-action"
-                    onClick={() => setViewingProductId(product.id)}
-                    type="button"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    className="secondary-action"
-                    onClick={() => deleteProduct(product.id)}
-                    type="button"
-                  >
-                    Delete
-                  </button>
-                </div>
-              )}
-            </article>
+              <div className="resource-grid">{section.items.map(renderCard)}</div>
+            </div>
           ))}
-          {!products.length && <p>No packages yet.</p>}
         </div>
       </section>
     </div>

@@ -30,6 +30,30 @@ export type HistoryEntry = {
   note: string
 }
 
+// BEO departments that receive their own instructions and sign-off. A view-only
+// "department" user is tied to one of these and acknowledges their section.
+export type BeoDepartment =
+  | 'Front office'
+  | 'Kitchen'
+  | 'Food & Beverage'
+  | 'Engineering'
+  | 'Housekeeping'
+  | 'Accounting'
+
+export const BEO_DEPARTMENTS: BeoDepartment[] = [
+  'Front office',
+  'Kitchen',
+  'Food & Beverage',
+  'Engineering',
+  'Housekeeping',
+  'Accounting',
+]
+
+export type DepartmentAck = {
+  by: string
+  at: string
+}
+
 export type EventBooking = {
   id: string
   eventName: string
@@ -75,6 +99,9 @@ export type EventBooking = {
   billingCompany?: string
   paymentMethod?: string
   clientApprovedAt?: string
+  // Per-department BEO instructions and each department's acknowledgement.
+  departmentInstructions?: Partial<Record<BeoDepartment, string>>
+  departmentAcks?: Partial<Record<BeoDepartment, DepartmentAck>>
 }
 
 export type Account = {
@@ -123,6 +150,11 @@ export type Lead = {
   history: HistoryEntry[]
 }
 
+export type PriceTier = {
+  label?: string
+  price: number
+}
+
 export type Product = {
   id: string
   name: string
@@ -135,6 +167,10 @@ export type Product = {
   displayOnBeo: boolean
   displayPrice: boolean
   tags: string[]
+  // Optional structured detail used by the catalogue cards: a checklist of
+  // what a package includes, and selectable price tiers for menus / durations.
+  inclusions?: string[]
+  priceTiers?: PriceTier[]
   sourceUrl?: string
 }
 
@@ -261,6 +297,14 @@ export const initialBookings: EventBooking[] = [
       { id: 'BKG-2401-DH2', timestamp: '2026-05-12', note: 'Sent to client' },
       { id: 'BKG-2401-DH3', timestamp: '2026-05-30', note: 'Line items updated' },
     ],
+    departmentInstructions: {
+      'Front office': 'VIP entrance at north lobby; brief bell desk to escort the CEO party. Discreet, quick check-in.',
+      Kitchen: 'Royal Thai set menu for 165 guaranteed. No-pork table for 24 guests — clearly labelled. Final count review by 14:00.',
+      'Food & Beverage': 'Coffee and petit fours at close. Wine service paced to the CEO speech transition; keep pours discreet.',
+      Engineering: 'Wireless microphones, LED wall, and podium uplight tested by 17:00. Standby technician during speeches.',
+      Housekeeping: 'Ballroom A deep-cleaned pre-set; refresh restrooms at 20:00. Reset room after teardown at 23:00.',
+      Accounting: 'Partial payment approved by finance. Issue final invoice after beverage actuals are confirmed.',
+    },
   },
   {
     id: 'BKG-2402',
@@ -617,8 +661,7 @@ export const products: Product[] = [
     id: 'PRD-W01',
     name: 'Pre-Wedding Photoshooting',
     category: 'Package',
-    description:
-      '5 hours pre-wedding venue photoshoot; day-use resort room for changing and preparation.',
+    description: 'Pre-wedding photoshoot session at the resort.',
     price: 15000,
     unit: 'net',
     cost: null,
@@ -626,13 +669,16 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['wedding', 'pre-wedding', 'photography'],
+    inclusions: [
+      '5 hours pre-wedding venue photoshoot',
+      'Day-use resort room for changing and preparation',
+    ],
   },
   {
     id: 'PRD-W02',
     name: 'Lanna Wedding',
     category: 'Package',
-    description:
-      "Traditional Thai (Lanna) wedding ceremony. Includes: back drop with floral arch; traditional 'Khan Mak' set; Bai Sri set with wrist binding or water blessing set or Chinese tea ceremony; Thai wedding ceremony set up; 30-min Lanna blessing by master of ceremony; floral neck garland for bride & groom; personalized couple name / welcome signage; groom's boutonniere; bridal bouquet; 4 corsages for parents; decorated registration desk, blessing book and money box; in-house sound system with background music; one-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two; complimentary honeymoon set up in room; 1 bottle of Sparkling Wine; herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee).",
+    description: 'Traditional Thai (Lanna) wedding ceremony.',
     price: 128888,
     unit: 'net',
     cost: null,
@@ -640,13 +686,30 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['wedding', 'thai', 'lanna', 'ceremony'],
+    inclusions: [
+      'Back drop with floral arch',
+      "Traditional 'Khan Mak' set",
+      'Bai Sri set with wrist binding or water blessing set or Chinese tea ceremony',
+      'Traditional Thai wedding ceremony set up',
+      '30-min Lanna blessing by master of ceremony',
+      'Floral neck garland for bride & groom',
+      'Personalized wedding couple name or welcome signage',
+      "Groom's boutonniere",
+      'Bridal bouquet',
+      '4 corsages for parents of bride and groom',
+      'Decorated registration desk, blessing book and money box',
+      'In-house sound system with background music',
+      'One-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two',
+      'Complimentary honeymoon set up in room',
+      'Complimentary 1 bottle of Sparkling Wine',
+      'Herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee)',
+    ],
   },
   {
     id: 'PRD-W03',
     name: 'Buddhist Ceremony — 5 Monks',
     category: 'Package',
-    description:
-      'Buddha image and flower decoration at altar; inviting 5 monks and master of ceremony for blessing; venue set up with equipment; Thai set menu in Lanna Tiffin Carrier and offering set for monks and master of ceremony.',
+    description: 'Buddhist wedding blessing ceremony with 5 monks.',
     price: 19888,
     unit: 'net',
     cost: null,
@@ -654,13 +717,18 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['wedding', 'buddhist', 'ceremony'],
+    inclusions: [
+      'Buddha image and flower decoration at altar',
+      'Inviting 5 monks and master of ceremony for blessing',
+      'Set up venue with equipment',
+      'Thai set menu in Lanna Tiffin Carrier and offering set for monks and master of ceremony',
+    ],
   },
   {
     id: 'PRD-W04',
     name: 'Buddhist Ceremony — 9 Monks',
     category: 'Package',
-    description:
-      'Buddha image and flower decoration at altar; inviting 9 monks and master of ceremony for blessing; venue set up with equipment; Thai set menu in Lanna Tiffin Carrier and offering set for monks and master of ceremony.',
+    description: 'Buddhist wedding blessing ceremony with 9 monks.',
     price: 38888,
     unit: 'net',
     cost: null,
@@ -668,13 +736,18 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['wedding', 'buddhist', 'ceremony'],
+    inclusions: [
+      'Buddha image and flower decoration at altar',
+      'Inviting 9 monks and master of ceremony for blessing',
+      'Set up venue with equipment',
+      'Thai set menu in Lanna Tiffin Carrier and offering set for monks and master of ceremony',
+    ],
   },
   {
     id: 'PRD-W05',
     name: 'Western Wedding',
     category: 'Package',
-    description:
-      "Western-style wedding ceremony. Includes: back drop with floral arch; personalized welcome signage; 6 floral along the aisle; 2 floral stands at the entrance; groom's boutonniere; bridal bouquet; 6 corsages for best men and 4 for bridesmaids; 4 corsages for parents; 8 sets of baskets of flower petals; decorated registration desk and blessing book; in-house sound system with background music; one-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two; complimentary honeymoon set up in room; 1 bottle of Sparkling Wine; herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee).",
+    description: 'Western-style wedding ceremony.',
     price: 128888,
     unit: 'net',
     cost: null,
@@ -682,13 +755,29 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['wedding', 'western', 'ceremony'],
+    inclusions: [
+      'Back drop with floral arch',
+      'Personalized welcome signage',
+      '6 floral along the aisle',
+      '2 floral stands at the entrance',
+      "Groom's boutonniere",
+      'Bridal bouquet',
+      '6 corsages for best men and 4 corsages for bridesmaid',
+      '4 corsages for parents of bride and groom',
+      '8 sets of baskets of flower petals',
+      'Decorated registration desk and blessing book',
+      'In-house sound system with background music',
+      'One-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two',
+      'Complimentary honeymoon set up in room',
+      'Complimentary 1 bottle of Sparkling Wine',
+      'Herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee)',
+    ],
   },
   {
     id: 'PRD-W06',
     name: 'Wedding Reception Decoration',
     category: 'Package',
-    description:
-      "Reception decoration package. Includes: back drop with floral arch; welcome floral backdrop; personalized welcome signage; 8 floral along the aisle; 2 floral stands at the entrance; groom's boutonniere; bridal bouquet; floral neck garland for bride & groom (Thai style ceremony); 3-tiers (ten-pound) wedding cake with flower decoration; champagne tower with flower decoration; 4 corsages for parents; decorated registration desk, blessing book and money box; floral decoration for the bride & groom's seats; standard flower vases on dining table; in-house sound system with background music; two-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two; complimentary honeymoon set up in room; 1 bottle of Champagne; herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee).",
+    description: 'Full wedding reception decoration package.',
     price: 168888,
     unit: 'net',
     cost: null,
@@ -696,12 +785,33 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['wedding', 'reception', 'decoration'],
+    inclusions: [
+      'Back drop with floral arch',
+      'Welcome floral backdrop',
+      'Personalized welcome signage',
+      '8 floral along the aisle',
+      '2 floral stands at the entrance',
+      "Groom's boutonniere",
+      'Bridal bouquet',
+      'Floral neck garland for bride & groom (Thai style ceremony)',
+      '3-tiers (ten-pound) wedding cake with flower decoration',
+      'Champagne tower with flower decoration',
+      '4 corsages for parents of bride and groom',
+      'Decorated registration desk, blessing book and money box',
+      "Floral decoration for the bride & groom's seats",
+      'Standard flower vases on dining table',
+      'In-house sound system with background music',
+      'Two-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two',
+      'Complimentary honeymoon set up in room',
+      'Complimentary 1 bottle of Champagne',
+      'Herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee)',
+    ],
   },
 
   // ── Venue rental (applied when no wedding package is taken) ──
   {
     id: 'PRD-R01',
-    name: 'Venue Rental — TIME Riverfront Cuisine & Bar',
+    name: 'TIME Riverfront Cuisine & Bar',
     category: 'Venue rental',
     description:
       'Venue rental fee (applied if no wedding package is taken). Or minimum revenue THB 150,000 net; maximum 5 hours per booking.',
@@ -715,7 +825,7 @@ export const products: Product[] = [
   },
   {
     id: 'PRD-R02',
-    name: 'Venue Rental — Glass House',
+    name: 'Glass House',
     category: 'Venue rental',
     description:
       'Venue rental fee (applied if no wedding package is taken). Or minimum revenue THB 80,000 net.',
@@ -729,7 +839,7 @@ export const products: Product[] = [
   },
   {
     id: 'PRD-R03',
-    name: 'Venue Rental — Huan Kammung',
+    name: 'Huan Kammung',
     category: 'Venue rental',
     description: 'Venue rental fee (applied if no wedding package is taken).',
     price: 35000,
@@ -742,7 +852,7 @@ export const products: Product[] = [
   },
   {
     id: 'PRD-R04',
-    name: 'Venue Rental — The Garden of Eternal Love',
+    name: 'The Garden of Eternal Love',
     category: 'Venue rental',
     description: 'Venue rental fee (applied if no wedding package is taken).',
     price: 65000,
@@ -754,12 +864,12 @@ export const products: Product[] = [
     tags: ['venue', 'rental', 'garden'],
   },
 
-  // ── Food & Beverage packages (per person; three menu tiers) ──
+  // ── Food & Beverage — menus (per person; three tiers to choose) ──
   {
     id: 'PRD-F01',
     name: 'Coffee Break',
     category: 'Food & Beverage',
-    description: 'Three menu tiers: THB 550 / 750 / 1,000 net per person.',
+    description: 'Coffee break menu — choose a tier.',
     price: 550,
     unit: 'net per person',
     cost: null,
@@ -767,12 +877,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'coffee-break'],
+    priceTiers: [{ price: 550 }, { price: 750 }, { price: 1000 }],
   },
   {
     id: 'PRD-F02',
     name: 'Kad Mua',
     category: 'Food & Beverage',
-    description: 'Three menu tiers: THB 850 / 1,000 / 1,200 net per person.',
+    description: 'Kad Mua (Lanna market-style) menu — choose a tier.',
     price: 850,
     unit: 'net per person',
     cost: null,
@@ -780,12 +891,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'thai', 'kad-mua'],
+    priceTiers: [{ price: 850 }, { price: 1000 }, { price: 1200 }],
   },
   {
     id: 'PRD-F03',
     name: 'Cocktail',
     category: 'Food & Beverage',
-    description: 'Three menu tiers: THB 850 / 1,000 / 1,400 net per person.',
+    description: 'Cocktail reception menu — choose a tier.',
     price: 850,
     unit: 'net per person',
     cost: null,
@@ -793,12 +905,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'cocktail'],
+    priceTiers: [{ price: 850 }, { price: 1000 }, { price: 1400 }],
   },
   {
     id: 'PRD-F04',
     name: 'Set Menu — Thai Set',
     category: 'Food & Beverage',
-    description: 'Three menu tiers: THB 1,200 / 1,500 / 1,800 net per person.',
+    description: 'Plated Thai set menu — choose a tier.',
     price: 1200,
     unit: 'net per person',
     cost: null,
@@ -806,12 +919,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'set-menu', 'thai'],
+    priceTiers: [{ price: 1200 }, { price: 1500 }, { price: 1800 }],
   },
   {
     id: 'PRD-F05',
     name: 'Set Menu — East Meets West Set',
     category: 'Food & Beverage',
-    description: 'Three menu tiers: THB 1,500 / 1,800 / 2,100 net per person.',
+    description: 'Plated East-meets-West set menu — choose a tier.',
     price: 1500,
     unit: 'net per person',
     cost: null,
@@ -819,12 +933,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'set-menu', 'fusion'],
+    priceTiers: [{ price: 1500 }, { price: 1800 }, { price: 2100 }],
   },
   {
     id: 'PRD-F06',
     name: 'Set Menu — Western Set',
     category: 'Food & Beverage',
-    description: 'Three menu tiers: THB 1,700 / 2,000 / 2,300 net per person.',
+    description: 'Plated Western set menu — choose a tier.',
     price: 1700,
     unit: 'net per person',
     cost: null,
@@ -832,12 +947,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'set-menu', 'western'],
+    priceTiers: [{ price: 1700 }, { price: 2000 }, { price: 2300 }],
   },
   {
     id: 'PRD-F07',
-    name: 'Thai Buffet',
+    name: 'Buffet — Thai Buffet',
     category: 'Food & Beverage',
-    description: 'Minimum 50 persons. Three menu tiers: THB 1,100 / 1,300 / 1,500 net per person.',
+    description: 'Thai buffet (minimum 50 persons) — choose a tier.',
     price: 1100,
     unit: 'net per person',
     cost: null,
@@ -845,12 +961,13 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'buffet', 'thai'],
+    priceTiers: [{ price: 1100 }, { price: 1300 }, { price: 1500 }],
   },
   {
     id: 'PRD-F08',
-    name: 'International Buffet',
+    name: 'Buffet — International Buffet',
     category: 'Food & Beverage',
-    description: 'Minimum 50 persons. Three menu tiers: THB 1,200 / 1,500 / 1,800 net per person.',
+    description: 'International buffet (minimum 50 persons) — choose a tier.',
     price: 1200,
     unit: 'net per person',
     cost: null,
@@ -858,15 +975,15 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['catering', 'buffet', 'international'],
+    priceTiers: [{ price: 1200 }, { price: 1500 }, { price: 1800 }],
   },
 
-  // ── Beverage packages ──
+  // ── Food & Beverage — beverage packages (choose duration / option) ──
   {
     id: 'PRD-B01',
     name: 'Free Flow — Soft Drinks',
     category: 'Beverage',
-    description:
-      'Per person by duration: 1hr 150 / 2hr 270 / 3hr 360 net. Coke, Sprite, ginger ale, tonic, soda, pouring water.',
+    description: 'Free flow soft drinks: Coke, Sprite, ginger ale, tonic, soda, pouring water.',
     price: 150,
     unit: 'net per person',
     cost: null,
@@ -874,13 +991,17 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['beverage', 'free-flow', 'soft-drinks'],
+    priceTiers: [
+      { label: '1 hour', price: 150 },
+      { label: '2 hours', price: 270 },
+      { label: '3 hours', price: 360 },
+    ],
   },
   {
     id: 'PRD-B02',
     name: 'Free Flow — Soft Drinks, Fruit Juices & Local Beers',
     category: 'Beverage',
-    description:
-      'Per person by duration: 1hr 500 / 2hr 800 / 3hr 1,050 net. Adds orange/apple/pineapple juice and Chang/Singha beer.',
+    description: 'Adds orange/apple/pineapple juice and Chang/Singha local beer.',
     price: 500,
     unit: 'net per person',
     cost: null,
@@ -888,12 +1009,17 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['beverage', 'free-flow', 'beer'],
+    priceTiers: [
+      { label: '1 hour', price: 500 },
+      { label: '2 hours', price: 800 },
+      { label: '3 hours', price: 1050 },
+    ],
   },
   {
     id: 'PRD-B03',
     name: 'Free Flow — Soft Drinks, Fruit Juices, Local Beers & House Wine',
     category: 'Beverage',
-    description: 'Per person by duration: 1hr 1,000 / 2hr 1,600 / 3hr 2,100 net. Adds house wine.',
+    description: 'Adds house wine to the free-flow selection.',
     price: 1000,
     unit: 'net per person',
     cost: null,
@@ -901,13 +1027,18 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['beverage', 'free-flow', 'wine'],
+    priceTiers: [
+      { label: '1 hour', price: 1000 },
+      { label: '2 hours', price: 1600 },
+      { label: '3 hours', price: 2100 },
+    ],
   },
   {
     id: 'PRD-B04',
     name: 'Standard Open Bar',
     category: 'Beverage',
     description:
-      'Per person by duration: 1hr 1,200 / 2hr 1,900 / 3hr 2,500 net. Soft drinks, fruit juice, local beer, house wine, whisky, vodka, tequila, gin, rum.',
+      'Soft drinks, fruit juice, local beer, house wine, whisky, vodka, tequila, gin and rum.',
     price: 1200,
     unit: 'net per person',
     cost: null,
@@ -915,6 +1046,11 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['beverage', 'open-bar', 'spirits'],
+    priceTiers: [
+      { label: '1 hour', price: 1200 },
+      { label: '2 hours', price: 1900 },
+      { label: '3 hours', price: 2500 },
+    ],
   },
   {
     id: 'PRD-B05',
@@ -985,7 +1121,7 @@ export const products: Product[] = [
     id: 'PRD-B10',
     name: 'Corkage Package',
     category: 'Beverage',
-    description: '1–12 bottles THB 3,000 / 13–24 bottles THB 5,000 / 24+ bottles THB 10,000 net.',
+    description: 'Flat corkage by volume of bottles brought in.',
     price: 3000,
     unit: 'net per event',
     cost: null,
@@ -993,6 +1129,11 @@ export const products: Product[] = [
     displayOnBeo: true,
     displayPrice: true,
     tags: ['beverage', 'corkage', 'package'],
+    priceTiers: [
+      { label: '1–12 bottles', price: 3000 },
+      { label: '13–24 bottles', price: 5000 },
+      { label: '24+ bottles', price: 10000 },
+    ],
   },
 
   // ── Additional services ──
