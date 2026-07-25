@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   CheckSquare,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleDollarSign,
@@ -36,7 +37,8 @@ import {
   Utensils,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import './App.css'
 import { isSupabaseEnabled, supabase } from './supabaseClient'
@@ -48,6 +50,12 @@ import {
   verifyConsoleSession,
 } from './consoleClient'
 import type { ConsoleSession } from './consoleClient'
+import {
+  createManagedUser,
+  deleteManagedUser,
+  listManagedUsers,
+} from './usersClient'
+import type { ManagedUser, NewUserInput } from './usersClient'
 import {
   accounts,
   BEO_DEPARTMENTS,
@@ -125,9 +133,14 @@ const NAV_ACTION: Partial<Record<ModuleId, Action>> = {
 }
 
 function visibleNavItems(role: AuthRole): NavItem[] {
-  // Department viewers only ever see the calendar and the BEOs they sign off on.
+  // Department viewers always get the calendar and the BEOs they sign off on,
+  // plus any extra nav items Top Management has granted their role.
   if (role === 'beo_viewer') {
-    return navItems.filter((item) => item.id === 'Calendar' || item.id === 'BEOs')
+    return navItems.filter((item) => {
+      if (item.id === 'Calendar' || item.id === 'BEOs') return true
+      const action = NAV_ACTION[item.id]
+      return action ? hasPermission(role, action) : false
+    })
   }
   return navItems.filter((item) => {
     const action = NAV_ACTION[item.id]
@@ -1098,7 +1111,7 @@ type AdminCredentialSettings = {
 // top_management/manager/staff are the real Supabase tiers. 'beo_viewer' is an
 // app-layer, view-only department sign-in (no Supabase account) that can only
 // see BEOs + the calendar and acknowledge its own department's instructions.
-type AuthRole = 'top_management' | 'manager' | 'staff' | 'beo_viewer'
+export type AuthRole = 'top_management' | 'manager' | 'staff' | 'beo_viewer'
 
 type LoginSession = {
   authenticated: boolean
@@ -1146,6 +1159,55 @@ type Action =
   | 'admin:settings'
   | 'admin:userManagement'
 
+// Every action, in the order shown in the Settings permission editor, grouped
+// for a readable matrix. Top Management always has all of them.
+const ACTION_CATALOG: { key: Action; label: string; group: string }[] = [
+  { key: 'nav:CRM', label: 'See CRM', group: 'Navigation' },
+  { key: 'nav:Leads', label: 'See Leads', group: 'Navigation' },
+  { key: 'nav:Proposals', label: 'See Proposals', group: 'Navigation' },
+  { key: 'nav:Invoices', label: 'See Invoices', group: 'Navigation' },
+  { key: 'nav:Packages', label: 'See Packages & Products', group: 'Navigation' },
+  { key: 'nav:Venues', label: 'See Venues', group: 'Navigation' },
+  { key: 'nav:Reports', label: 'See Reports', group: 'Navigation' },
+  { key: 'booking:create', label: 'Create bookings', group: 'Bookings' },
+  { key: 'booking:advanceStatus', label: 'Advance booking status', group: 'Bookings' },
+  { key: 'booking:fallBackStatus', label: 'Move booking status back', group: 'Bookings' },
+  { key: 'leads:create', label: 'Create leads', group: 'Leads' },
+  { key: 'leads:edit', label: 'Edit leads', group: 'Leads' },
+  { key: 'leads:delete', label: 'Delete leads', group: 'Leads' },
+  { key: 'proposal:edit', label: 'Edit proposals & BEO instructions', group: 'Documents' },
+  { key: 'packages:edit', label: 'Edit packages & products', group: 'Documents' },
+  { key: 'admin:settings', label: 'Edit property settings', group: 'Administration' },
+  { key: 'admin:userManagement', label: 'Manage users', group: 'Administration' },
+]
+
+const ALL_ACTIONS: Action[] = ACTION_CATALOG.map((entry) => entry.key)
+
+// Roles whose permissions Top Management can edit. Top Management itself is
+// always all-access and never editable; that guarantee lives in this module.
+const EDITABLE_ROLES: AuthRole[] = ['manager', 'staff', 'beo_viewer']
+
+export type RolePermissionOverrides = Partial<Record<AuthRole, Action[]>>
+
+// BEO Viewers are an app-layer roster (no Supabase account): a name tied to one
+// department. They sign in through the "Department (BEO)" tab, view-only.
+export type BeoViewer = {
+  id: string
+  name: string
+  department: BeoDepartment
+}
+
+// A small starter roster so the BEO Viewers section is not empty on first run.
+const initialBeoViewers: BeoViewer[] = [
+  { id: 'beo-viewer-1', name: 'Front desk lead', department: 'Front Office' },
+  { id: 'beo-viewer-2', name: 'Kitchen pass', department: 'Kitchen' },
+]
+
+// A STABLE empty default — useSyncedState keys its hydration effect on the
+// initialValue identity, so this must not be an inline {} (that would re-run the
+// effect every render and loop). No overrides means "use the built-in defaults".
+const EMPTY_ROLE_OVERRIDES: RolePermissionOverrides = {}
+
 const STAFF_ACTIONS: Action[] = ['booking:advanceStatus']
 const MANAGER_ONLY_ADDITIONS: Action[] = [
   'nav:Leads',
@@ -1162,24 +1224,53 @@ const MANAGER_ONLY_ADDITIONS: Action[] = [
   'leads:edit',
   'leads:delete',
   'proposal:edit',
+  // Managers can manage users, but the User Management panel itself limits them
+  // to adding Staff and BEO Viewers (never Top Management or other Managers).
+  'admin:userManagement',
 ]
-const TOP_MANAGEMENT_ONLY_ADDITIONS: Action[] = ['packages:edit', 'admin:settings', 'admin:userManagement']
 
-const PERMISSIONS: Record<AuthRole, Set<Action>> = {
-  // Department viewers are view-only: no gated actions. Their nav is handled
-  // explicitly in visibleNavItems (BEOs + calendar only).
+// The built-in defaults, used until Top Management customises a role and as the
+// fallback for any role without an override.
+const DEFAULT_PERMISSIONS: Record<AuthRole, Set<Action>> = {
+  // Department viewers are view-only by default: no gated actions. Their base nav
+  // (BEOs + calendar) is handled explicitly in visibleNavItems.
   beo_viewer: new Set(),
   staff: new Set(STAFF_ACTIONS),
   manager: new Set([...STAFF_ACTIONS, ...MANAGER_ONLY_ADDITIONS]),
-  top_management: new Set([
-    ...STAFF_ACTIONS,
-    ...MANAGER_ONLY_ADDITIONS,
-    ...TOP_MANAGEMENT_ONLY_ADDITIONS,
-  ]),
+  top_management: new Set(ALL_ACTIONS),
+}
+
+// The permissions actually enforced. Rebuilt from DEFAULT_PERMISSIONS plus any
+// saved overrides via applyPermissionOverrides(); hasPermission reads this.
+const activePermissions: Record<AuthRole, Set<Action>> = {
+  top_management: new Set(DEFAULT_PERMISSIONS.top_management),
+  manager: new Set(DEFAULT_PERMISSIONS.manager),
+  staff: new Set(DEFAULT_PERMISSIONS.staff),
+  beo_viewer: new Set(DEFAULT_PERMISSIONS.beo_viewer),
+}
+
+/**
+ * Rebuilds the enforced permission sets from the saved overrides. Called
+ * synchronously from App on every render so children see a consistent view.
+ * Top Management is never overridable — it always keeps every action.
+ */
+function applyPermissionOverrides(overrides: RolePermissionOverrides | undefined) {
+  activePermissions.top_management = new Set(ALL_ACTIONS)
+  for (const role of EDITABLE_ROLES) {
+    const override = overrides?.[role]
+    if (override) {
+      // Keep only recognised actions, in case an old key lingers in saved state.
+      activePermissions[role] = new Set(
+        override.filter((action) => ALL_ACTIONS.includes(action)),
+      )
+    } else {
+      activePermissions[role] = new Set(DEFAULT_PERMISSIONS[role])
+    }
+  }
 }
 
 function hasPermission(role: AuthRole, action: Action): boolean {
-  return PERMISSIONS[role].has(action)
+  return activePermissions[role].has(action)
 }
 
 // Staff sign in with a username scoped to their workspace code; the auth email is
@@ -1408,6 +1499,27 @@ function App() {
     initialProducts,
     userId,
   )
+  // Editable BEO department list, the BEO Viewer roster, and per-role permission
+  // overrides all live in per-user synced state (Settings edits them).
+  const [departments, setDepartments] = useSyncedState<BeoDepartment[]>(
+    'eventpilot.departments.v1',
+    BEO_DEPARTMENTS,
+    userId,
+  )
+  const [beoViewers, setBeoViewers] = useSyncedState<BeoViewer[]>(
+    'eventpilot.beo-viewers.v1',
+    initialBeoViewers,
+    userId,
+  )
+  const [rolePermissionOverrides, setRolePermissionOverrides] =
+    useSyncedState<RolePermissionOverrides>(
+      'eventpilot.role-permissions.v1',
+      EMPTY_ROLE_OVERRIDES,
+      userId,
+    )
+  // Rebuild the enforced permission sets from saved overrides before rendering
+  // any child, so every hasPermission() call this render is consistent.
+  applyPermissionOverrides(rolePermissionOverrides)
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
   // null = show the list; a booking id = show that document's detail with a back button.
   const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
@@ -2221,6 +2333,7 @@ function App() {
                 acknowledgeDepartment={acknowledgeDepartment}
                 appendBeoHistory={appendBeoHistory}
                 booking={beoViewBooking}
+                departments={departments}
                 markBeoRevised={markBeoRevised}
                 markClientApproved={markClientApproved}
                 onBack={() => setBeoViewBookingId(null)}
@@ -2319,9 +2432,15 @@ function App() {
           {activeModule === 'Settings' && (
             <SettingsView
               account={loginSession}
+              beoViewers={beoViewers}
               currentUserId={userId}
+              departments={departments}
               propertyProfile={propertyProfile}
+              rolePermissionOverrides={rolePermissionOverrides}
+              setBeoViewers={setBeoViewers}
+              setDepartments={setDepartments}
               setPropertyProfile={setPropertyProfile}
+              setRolePermissionOverrides={setRolePermissionOverrides}
               updateAccountEmail={updateAccountEmail}
               updateAccountPassword={updateAccountPassword}
               updateProfileName={updateProfileName}
@@ -4773,6 +4892,7 @@ function BeoView({
   acknowledgeDepartment,
   appendBeoHistory,
   booking,
+  departments,
   markBeoRevised,
   markClientApproved,
   onBack,
@@ -4783,6 +4903,7 @@ function BeoView({
   acknowledgeDepartment: (bookingId: string, dept: BeoDepartment, by: string) => void
   appendBeoHistory: (bookingId: string, note: string) => void
   booking: EventBooking
+  departments: BeoDepartment[]
   markBeoRevised: (bookingId: string) => void
   markClientApproved: (bookingId: string) => void
   onBack: () => void
@@ -4791,6 +4912,15 @@ function BeoView({
   updateDepartmentInstruction: (bookingId: string, dept: BeoDepartment, text: string) => void
 }) {
   const isDepartmentViewer = session.role === 'beo_viewer'
+  // Show the configured departments plus any this booking already has data for,
+  // so renaming/removing a department in Settings never hides existing sign-offs.
+  const bookingDepartments = Array.from(
+    new Set([
+      ...departments,
+      ...Object.keys(booking.departmentInstructions ?? {}),
+      ...Object.keys(booking.departmentAcks ?? {}),
+    ]),
+  )
   const canEditInstructions = hasPermission(session.role, 'proposal:edit')
   const viewerName = session.displayName.trim() || 'Department user'
   const beoHistory = [...(booking.beoHistory ?? [])].sort((first, second) =>
@@ -5126,12 +5256,12 @@ function BeoView({
               </h3>
             </div>
             <strong>
-              {BEO_DEPARTMENTS.filter((dept) => booking.departmentAcks?.[dept]).length}/
-              {BEO_DEPARTMENTS.length} acknowledged
+              {bookingDepartments.filter((dept) => booking.departmentAcks?.[dept]).length}/
+              {bookingDepartments.length} acknowledged
             </strong>
           </div>
           <div className="department-instruction-list">
-            {BEO_DEPARTMENTS.map((dept) => {
+            {bookingDepartments.map((dept) => {
               const instruction = booking.departmentInstructions?.[dept] ?? ''
               const ack = booking.departmentAcks?.[dept]
               const isMine = isDepartmentViewer && session.department === dept
@@ -6749,6 +6879,20 @@ function AdminConsoleView({
   const [passwordDraft, setPasswordDraft] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [securityNotice, setSecurityNotice] = useState('')
+  // The signed-in operator's own console-admin identity, read from (and written
+  // back to) eventpilot_console_admins — not the cosmetic adminCredentialSettings.
+  // Lazy-initialised from the console session so the sandbox / initial identity
+  // is set without a synchronous setState inside the load effect below.
+  const [adminProfile, setAdminProfile] = useState(() => {
+    const session = readConsoleSession()
+    return {
+      username: session?.username ?? '',
+      displayName: session?.name || session?.username || '',
+      email: '',
+    }
+  })
+  const [profileNotice, setProfileNotice] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
   const [clientNotice, setClientNotice] = useState('')
   const [editingPlanId, setEditingPlanId] = useState<SaaSTierId | null>(null)
   const [editingPackId, setEditingPackId] = useState<string | null>(null)
@@ -6861,6 +7005,74 @@ function AdminConsoleView({
       ...currentSettings,
       [field]: value,
     }))
+  }
+
+  // Load the signed-in operator's own console-admin row so the name/email fields
+  // reflect (and save back to) the real record. list_admins is service-role only
+  // behind the console token, so nothing sensitive is exposed to the browser.
+  useEffect(() => {
+    let active = true
+    const session = readConsoleSession()
+    // No session, or offline sandbox (no backend row): the lazy initial state
+    // already holds the session identity, so there is nothing to fetch.
+    if (!session || session.sandbox) return
+    void consoleCall('list_admins')
+      .then((data) => {
+        if (!active) return
+        const admins = (data.admins ?? []) as Array<{
+          username: string
+          display_name: string | null
+          email: string | null
+        }>
+        const me = admins.find((a) => a.username === session.username)
+        setAdminProfile({
+          username: me?.username ?? session.username,
+          displayName: me?.display_name ?? session.name ?? '',
+          email: me?.email ?? '',
+        })
+      })
+      .catch(() => {
+        if (!active) return
+        setAdminProfile((current) => ({
+          ...current,
+          username: session.username,
+          displayName: current.displayName || session.name || '',
+        }))
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Persists the operator's display name and contact email to their
+  // eventpilot_console_admins row. Passing no password leaves the hash untouched.
+  const handleAdminProfileSave = async () => {
+    const session = readConsoleSession()
+    if (!session) {
+      setProfileNotice('Console session expired. Sign in again.')
+      return
+    }
+    const displayName = adminProfile.displayName.trim()
+    if (!displayName) {
+      setProfileNotice('Admin name cannot be empty.')
+      return
+    }
+    setSavingProfile(true)
+    try {
+      await consoleCall('upsert_admin', {
+        username: adminProfile.username || session.username,
+        display_name: displayName,
+        email: adminProfile.email.trim() || null,
+      })
+    } catch (error) {
+      setProfileNotice(
+        error instanceof Error ? error.message : 'Could not save the admin profile.',
+      )
+      return
+    } finally {
+      setSavingProfile(false)
+    }
+    setProfileNotice('Admin profile updated.')
   }
 
   // Changes the signed-in console admin's real password via the console edge
@@ -7458,25 +7670,64 @@ function AdminConsoleView({
       {activeTab === 'Security' && (
         <section className="admin-console-layout admin-security-layout">
           <div className="panel admin-credentials-panel">
-            <PanelHeader title="Admin login credentials" />
+            <PanelHeader title="Admin account" />
+            <p className="panel-subtitle">
+              This is the identity you use to sign in to the console. The name is
+              saved to your operator record; the login username is fixed.
+            </p>
             <div className="form-grid">
+              <FormField label="Login username">
+                <input
+                  disabled
+                  readOnly
+                  value={adminProfile.username}
+                />
+              </FormField>
               <FormField label="Admin name">
                 <input
                   onChange={(event) =>
-                    updateAdminCredential('adminName', event.target.value)
+                    setAdminProfile((current) => ({
+                      ...current,
+                      displayName: event.target.value,
+                    }))
                   }
-                  value={adminCredentialSettings.adminName}
+                  value={adminProfile.displayName}
                 />
               </FormField>
               <FormField label="Admin email">
                 <input
                   onChange={(event) =>
-                    updateAdminCredential('adminEmail', event.target.value)
+                    setAdminProfile((current) => ({
+                      ...current,
+                      email: event.target.value,
+                    }))
                   }
                   type="email"
-                  value={adminCredentialSettings.adminEmail}
+                  value={adminProfile.email}
                 />
               </FormField>
+            </div>
+            <div className="status-actions">
+              <button
+                className="primary-action"
+                disabled={savingProfile}
+                onClick={() => void handleAdminProfileSave()}
+                type="button"
+              >
+                <ShieldCheck size={17} />
+                {savingProfile ? 'Saving…' : 'Save admin profile'}
+              </button>
+            </div>
+            {profileNotice && <p className="admin-notice">{profileNotice}</p>}
+          </div>
+
+          <div className="panel admin-credentials-panel">
+            <PanelHeader title="Console password" />
+            <p className="panel-subtitle">
+              Enter your current password to set a new one. Passwords are stored
+              only as a bcrypt hash.
+            </p>
+            <div className="form-grid">
               <FormField label="Current console password">
                 <input
                   autoComplete="current-password"
@@ -7628,17 +7879,35 @@ function AdminConsoleView({
 
 function SettingsView({
   account,
+  beoViewers,
   currentUserId,
+  departments,
   propertyProfile,
+  rolePermissionOverrides,
+  setBeoViewers,
+  setDepartments,
   setPropertyProfile,
+  setRolePermissionOverrides,
   updateAccountEmail,
   updateAccountPassword,
   updateProfileName,
 }: {
   account: LoginSession
+  beoViewers: BeoViewer[]
   currentUserId: string | null
+  departments: BeoDepartment[]
   propertyProfile: PropertyProfile
+  rolePermissionOverrides: RolePermissionOverrides
+  setBeoViewers: (next: BeoViewer[] | ((current: BeoViewer[]) => BeoViewer[])) => void
+  setDepartments: (
+    next: BeoDepartment[] | ((current: BeoDepartment[]) => BeoDepartment[]),
+  ) => void
   setPropertyProfile: (value: PropertyProfile) => void
+  setRolePermissionOverrides: (
+    next:
+      | RolePermissionOverrides
+      | ((current: RolePermissionOverrides) => RolePermissionOverrides),
+  ) => void
   updateAccountEmail: (email: string) => Promise<string | null>
   updateAccountPassword: (password: string) => Promise<string | null>
   updateProfileName: (name: string) => Promise<string | null>
@@ -7646,6 +7915,7 @@ function SettingsView({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<PropertyProfile>(propertyProfile)
   const canEditProfile = hasPermission(account.role, 'admin:settings')
+  const canManageUsers = hasPermission(account.role, 'admin:userManagement')
 
   const startEditing = () => {
     setDraft(propertyProfile)
@@ -7836,22 +8106,42 @@ function SettingsView({
         updateProfileName={updateProfileName}
       />
 
-      {isSupabaseEnabled && hasPermission(account.role, 'admin:userManagement') && (
-        <UserManagementPanel currentUserId={currentUserId} />
+      {isSupabaseEnabled && canManageUsers && (
+        <UserManagementPanel
+          beoViewers={beoViewers}
+          currentRole={account.role}
+          currentUserId={currentUserId}
+          currentWorkspaceCode={account.workspaceCode}
+          departments={departments}
+          setBeoViewers={setBeoViewers}
+        />
       )}
 
-      <section className="panel">
-        <PanelHeader title="Roles and permissions" />
-        <div className="permission-grid">
-          {rolePermissions.map(([role, permission]) => (
-            <div className="permission-row" key={role}>
-              <strong>{role}</strong>
-              <span>{permission}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      {account.role === 'top_management' && (
+        <DepartmentsPanel
+          beoViewers={beoViewers}
+          departments={departments}
+          setDepartments={setDepartments}
+        />
+      )}
 
+      {account.role === 'top_management' ? (
+        <RolePermissionsPanel
+          overrides={rolePermissionOverrides}
+          setOverrides={setRolePermissionOverrides}
+        />
+      ) : (
+        <CollapsiblePanel title="Roles and permissions">
+          <div className="permission-grid">
+            {rolePermissions.map(([role, permission]) => (
+              <div className="permission-row" key={role}>
+                <strong>{role}</strong>
+                <span>{permission}</span>
+              </div>
+            ))}
+          </div>
+        </CollapsiblePanel>
+      )}
     </div>
   )
 }
@@ -8035,42 +8325,216 @@ function UserProfilePanel({
   )
 }
 
-type ManagedUser = {
-  user_id: string
-  email: string
-  display_name: string | null
-  workspace_code: string | null
-  role: AuthRole
+// Singular labels for buttons ("Add Manager", not "Add Managers").
+const ROLE_SINGULAR: Record<AuthRole, string> = {
+  top_management: 'Top Management user',
+  manager: 'Manager',
+  staff: 'Staff member',
+  beo_viewer: 'BEO Viewer',
+}
+
+/** Inline form to create a real Supabase account for a tier. */
+function AddAccountForm({
+  onCreate,
+  role,
+  workspaceCode,
+}: {
+  onCreate: (input: NewUserInput) => Promise<boolean>
+  role: Exclude<AuthRole, 'beo_viewer'>
+  workspaceCode: string
+}) {
+  const isStaff = role === 'staff'
+  const [displayName, setDisplayName] = useState('')
+  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [localError, setLocalError] = useState('')
+
+  const submit = async () => {
+    setLocalError('')
+    if (!displayName.trim()) return setLocalError('Enter a name.')
+    if (isStaff && !username.trim()) return setLocalError('Enter a username.')
+    if (!isStaff && !email.includes('@')) return setLocalError('Enter a valid email.')
+    if (password.length < 8) return setLocalError('Password must be at least 8 characters.')
+    setBusy(true)
+    const ok = await onCreate({
+      role,
+      display_name: displayName.trim(),
+      password,
+      ...(isStaff ? { username: username.trim() } : { email: email.trim() }),
+    })
+    setBusy(false)
+    if (ok) {
+      setDisplayName('')
+      setEmail('')
+      setUsername('')
+      setPassword('')
+    }
+  }
+
+  return (
+    <div className="user-admin-add">
+      <div className="form-grid">
+        <FormField label="Full name">
+          <input
+            onChange={(event) => setDisplayName(event.target.value)}
+            value={displayName}
+          />
+        </FormField>
+        {isStaff ? (
+          <FormField label="Username">
+            <input
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="e.g. somchai"
+              value={username}
+            />
+          </FormField>
+        ) : (
+          <FormField label="Sign-in email">
+            <input
+              onChange={(event) => setEmail(event.target.value)}
+              type="email"
+              value={email}
+            />
+          </FormField>
+        )}
+        <FormField label="Temporary password">
+          <input
+            autoComplete="new-password"
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="At least 8 characters"
+            type="password"
+            value={password}
+          />
+        </FormField>
+        {isStaff && (
+          <FormField label="Workspace code">
+            <input disabled readOnly value={workspaceCode || '—'} />
+          </FormField>
+        )}
+      </div>
+      {localError && <p className="login-error">{localError}</p>}
+      <div className="status-actions">
+        <button
+          className="primary-action"
+          disabled={busy}
+          onClick={() => void submit()}
+          type="button"
+        >
+          <Plus size={16} />
+          {busy ? 'Adding…' : `Add ${ROLE_SINGULAR[role]}`}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** Inline form to add an app-layer BEO Viewer (name + department). */
+function AddBeoViewerForm({
+  departments,
+  onAdd,
+}: {
+  departments: BeoDepartment[]
+  onAdd: (name: string, department: BeoDepartment) => void
+}) {
+  const [name, setName] = useState('')
+  const [department, setDepartment] = useState<BeoDepartment>(departments[0] ?? '')
+  const [localError, setLocalError] = useState('')
+
+  const submit = () => {
+    setLocalError('')
+    if (!name.trim()) return setLocalError('Enter a name.')
+    if (!department) return setLocalError('Choose a department.')
+    onAdd(name.trim(), department)
+    setName('')
+    setDepartment(departments[0] ?? '')
+  }
+
+  return (
+    <div className="user-admin-add">
+      <div className="form-grid">
+        <FormField label="Name">
+          <input onChange={(event) => setName(event.target.value)} value={name} />
+        </FormField>
+        <FormField label="Department">
+          <select
+            onChange={(event) => setDepartment(event.target.value)}
+            value={department}
+          >
+            {departments.map((dept) => (
+              <option key={dept} value={dept}>
+                {dept}
+              </option>
+            ))}
+          </select>
+        </FormField>
+      </div>
+      {localError && <p className="login-error">{localError}</p>}
+      <div className="status-actions">
+        <button
+          className="primary-action"
+          onClick={submit}
+          type="button"
+        >
+          <Plus size={16} />
+          Add BEO Viewer
+        </button>
+      </div>
+    </div>
+  )
 }
 
 /**
- * Top-Management-only panel to view every user and change their access tier.
- * Writes go straight to eventpilot_profiles; the database guard trigger enforces
- * that only Top Management can change roles and blocks demoting the last one.
+ * User Management: four sections (Top Management / Managers / Staff / BEO
+ * Viewers). Real tier accounts are created and deleted through the
+ * eventpilot-users edge function (service role); BEO Viewers are an app-layer
+ * roster. What a caller may do is gated by their own role:
+ *   - Top Management: add/remove all tiers, change roles, manage BEO Viewers.
+ *   - Managers: add/remove Staff and BEO Viewers only.
  */
-function UserManagementPanel({ currentUserId }: { currentUserId: string | null }) {
+function UserManagementPanel({
+  beoViewers,
+  currentRole,
+  currentUserId,
+  currentWorkspaceCode,
+  departments,
+  setBeoViewers,
+}: {
+  beoViewers: BeoViewer[]
+  currentRole: AuthRole
+  currentUserId: string | null
+  currentWorkspaceCode: string
+  departments: BeoDepartment[]
+  setBeoViewers: (next: BeoViewer[] | ((current: BeoViewer[]) => BeoViewer[])) => void
+}) {
   const [users, setUsers] = useState<ManagedUser[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [savingId, setSavingId] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [openAdd, setOpenAdd] = useState<AuthRole | null>(null)
+
+  const isTop = currentRole === 'top_management'
+  const canManageStaff = isTop || currentRole === 'manager'
 
   useEffect(() => {
-    if (!supabase) return
+    // `loading` starts true, and this runs once on mount, so no setLoading(true)
+    // here (calling setState synchronously in an effect body is discouraged).
     let active = true
-    void supabase
-      .from('eventpilot_profiles')
-      .select('user_id, email, display_name, workspace_code, role')
-      .order('created_at')
-      .then(({ data, error: fetchError }) => {
+    listManagedUsers()
+      .then((list) => {
         if (!active) return
-        if (fetchError) {
-          setLoadError(fetchError.message)
-        } else {
-          setUsers((data ?? []) as ManagedUser[])
-        }
-        setLoading(false)
+        setUsers(list)
+        setLoadError('')
+      })
+      .catch((err) => {
+        if (!active) return
+        setLoadError(err instanceof Error ? err.message : 'Could not load users.')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
       })
     return () => {
       active = false
@@ -8081,7 +8545,6 @@ function UserManagementPanel({ currentUserId }: { currentUserId: string | null }
     if (!supabase || nextRole === user.role) return
     setError('')
     setNotice('')
-
     if (
       user.user_id === currentUserId &&
       !window.confirm(
@@ -8090,16 +8553,13 @@ function UserManagementPanel({ currentUserId }: { currentUserId: string | null }
     ) {
       return
     }
-
-    setSavingId(user.user_id)
+    setBusyId(user.user_id)
     const { error: updateError } = await supabase
       .from('eventpilot_profiles')
       .update({ role: nextRole })
       .eq('user_id', user.user_id)
-    setSavingId(null)
-
+    setBusyId(null)
     if (updateError) {
-      // Surface the guard-trigger message (e.g. last Top Management) verbatim.
       setError(updateError.message)
       return
     }
@@ -8108,16 +8568,152 @@ function UserManagementPanel({ currentUserId }: { currentUserId: string | null }
         item.user_id === user.user_id ? { ...item, role: nextRole } : item,
       ),
     )
-    setNotice(
-      `${user.display_name?.trim() || user.email} is now ${ROLE_LABELS[nextRole].en}.`,
+    setNotice(`${user.display_name?.trim() || user.email} is now ${ROLE_LABELS[nextRole].en}.`)
+  }
+
+  const removeUser = async (user: ManagedUser) => {
+    if (
+      !window.confirm(
+        `Remove ${user.display_name?.trim() || user.email}? Their sign-in account is permanently deleted.`,
+      )
+    ) {
+      return
+    }
+    setError('')
+    setNotice('')
+    setBusyId(user.user_id)
+    try {
+      await deleteManagedUser(user.user_id)
+      setUsers((current) => current.filter((item) => item.user_id !== user.user_id))
+      setNotice(`${user.display_name?.trim() || user.email} was removed.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove the user.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const createUser = async (input: NewUserInput): Promise<boolean> => {
+    setError('')
+    setNotice('')
+    try {
+      const created = await createManagedUser(input)
+      setUsers((current) => [...current, created])
+      setNotice(`${created.display_name?.trim() || created.email} was added.`)
+      setOpenAdd(null)
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add the user.')
+      return false
+    }
+  }
+
+  const addBeoViewer = (name: string, department: BeoDepartment) => {
+    setBeoViewers((current) => [
+      ...current,
+      { id: crypto.randomUUID(), name, department },
+    ])
+    setNotice(`${name} was added as a BEO Viewer.`)
+    setOpenAdd(null)
+  }
+
+  const removeBeoViewer = (id: string) => {
+    setBeoViewers((current) => current.filter((viewer) => viewer.id !== id))
+  }
+
+  const tierUsers = (role: AuthRole) => users.filter((user) => user.role === role)
+
+  const canDeleteUser = (user: ManagedUser) => {
+    if (user.user_id === currentUserId) return false
+    if (isTop) return true
+    return currentRole === 'manager' && user.role === 'staff'
+  }
+
+  const renderTierSection = (role: Exclude<AuthRole, 'beo_viewer'>, canAdd: boolean) => {
+    const list = tierUsers(role)
+    return (
+      <div className="user-admin-section" key={role}>
+        <div className="user-admin-section-head">
+          <h3>
+            {ROLE_LABELS[role].en} <span className="user-admin-count">{list.length}</span>
+          </h3>
+          {canAdd && (
+            <button
+              className="secondary-action"
+              onClick={() => setOpenAdd(openAdd === role ? null : role)}
+              type="button"
+            >
+              <Plus size={15} />
+              {openAdd === role ? 'Close' : `Add ${ROLE_SINGULAR[role]}`}
+            </button>
+          )}
+        </div>
+        {canAdd && openAdd === role && (
+          <AddAccountForm
+            onCreate={createUser}
+            role={role}
+            workspaceCode={currentWorkspaceCode}
+          />
+        )}
+        {list.length === 0 ? (
+          <p className="user-admin-empty">No {ROLE_LABELS[role].en.toLowerCase()} yet.</p>
+        ) : (
+          <div className="user-admin-list">
+            {list.map((user) => (
+              <div className="user-admin-row" key={user.user_id}>
+                <div className="user-admin-identity">
+                  <strong>
+                    {user.display_name?.trim() || user.email}
+                    {user.user_id === currentUserId && (
+                      <span className="user-admin-you">You</span>
+                    )}
+                  </strong>
+                  <span>
+                    {user.username ? `@${user.username}` : user.email}
+                    {user.workspace_code ? ` · ${user.workspace_code}` : ''}
+                  </span>
+                </div>
+                <div className="user-admin-controls">
+                  {isTop && (
+                    <select
+                      aria-label={`Access level for ${user.email}`}
+                      className="user-admin-select"
+                      disabled={busyId === user.user_id}
+                      onChange={(event) => changeRole(user, event.target.value as AuthRole)}
+                      value={user.role}
+                    >
+                      {AUTH_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {ROLE_LABELS[r].en}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {canDeleteUser(user) && (
+                    <button
+                      className="user-admin-remove"
+                      disabled={busyId === user.user_id}
+                      onClick={() => void removeUser(user)}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     )
   }
 
   return (
-    <section className="panel">
-      <PanelHeader title="User management" />
+    <CollapsiblePanel title="User management">
       <p className="panel-subtitle">
-        Set each user's access level. Only Top Management can manage roles.
+        {isTop
+          ? 'Add and remove users, and set each user’s access level. New accounts sign in immediately with the password you set.'
+          : 'Add Staff and BEO Viewers for your team.'}
       </p>
 
       {loading ? (
@@ -8125,44 +8721,332 @@ function UserManagementPanel({ currentUserId }: { currentUserId: string | null }
       ) : loadError ? (
         <p className="login-error">{loadError}</p>
       ) : (
-        <div className="user-admin-list">
-          {users.map((user) => (
-            <div className="user-admin-row" key={user.user_id}>
-              <div className="user-admin-identity">
-                <strong>
-                  {user.display_name?.trim() || user.email}
-                  {user.user_id === currentUserId && (
-                    <span className="user-admin-you">You</span>
-                  )}
-                </strong>
-                <span>
-                  {user.email}
-                  {user.workspace_code ? ` · ${user.workspace_code}` : ''}
-                </span>
-              </div>
-              <select
-                aria-label={`Access level for ${user.email}`}
-                className="user-admin-select"
-                disabled={savingId === user.user_id}
-                onChange={(event) =>
-                  changeRole(user, event.target.value as AuthRole)
-                }
-                value={user.role}
-              >
-                {AUTH_ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {ROLE_LABELS[r].en}
-                  </option>
-                ))}
-              </select>
+        <div className="user-admin-sections">
+          {isTop && renderTierSection('top_management', true)}
+          {isTop && renderTierSection('manager', true)}
+          {renderTierSection('staff', canManageStaff)}
+
+          <div className="user-admin-section">
+            <div className="user-admin-section-head">
+              <h3>
+                {ROLE_LABELS.beo_viewer.en}{' '}
+                <span className="user-admin-count">{beoViewers.length}</span>
+              </h3>
+              {canManageStaff && (
+                <button
+                  className="secondary-action"
+                  onClick={() =>
+                    setOpenAdd(openAdd === 'beo_viewer' ? null : 'beo_viewer')
+                  }
+                  type="button"
+                >
+                  <Plus size={15} />
+                  {openAdd === 'beo_viewer' ? 'Close' : 'Add BEO Viewer'}
+                </button>
+              )}
             </div>
-          ))}
+            {canManageStaff && openAdd === 'beo_viewer' && (
+              <AddBeoViewerForm departments={departments} onAdd={addBeoViewer} />
+            )}
+            {beoViewers.length === 0 ? (
+              <p className="user-admin-empty">No BEO Viewers yet.</p>
+            ) : (
+              <div className="user-admin-list">
+                {beoViewers.map((viewer) => (
+                  <div className="user-admin-row" key={viewer.id}>
+                    <div className="user-admin-identity">
+                      <strong>{viewer.name}</strong>
+                      <span>{viewer.department}</span>
+                    </div>
+                    <div className="user-admin-controls">
+                      {canManageStaff && (
+                        <button
+                          className="user-admin-remove"
+                          onClick={() => removeBeoViewer(viewer.id)}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {error && <p className="login-error">{error}</p>}
       {notice && <p className="profile-notice">{notice}</p>}
-    </section>
+    </CollapsiblePanel>
+  )
+}
+
+/** Top-Management editor for the BEO department list. */
+function DepartmentsPanel({
+  beoViewers,
+  departments,
+  setDepartments,
+}: {
+  beoViewers: BeoViewer[]
+  departments: BeoDepartment[]
+  setDepartments: (
+    next: BeoDepartment[] | ((current: BeoDepartment[]) => BeoDepartment[]),
+  ) => void
+}) {
+  const [draft, setDraft] = useState<BeoDepartment[]>(departments)
+  const [dirty, setDirty] = useState(false)
+  const [newDept, setNewDept] = useState('')
+  const [notice, setNotice] = useState('')
+
+  // Adjust the draft during render when the saved list changes (hydration / other
+  // edits), but never clobber unsaved work. This is the React-endorsed pattern
+  // for resetting state from props without an effect.
+  const [syncedFrom, setSyncedFrom] = useState(departments)
+  if (!dirty && syncedFrom !== departments) {
+    setSyncedFrom(departments)
+    setDraft(departments)
+  }
+
+  const addDept = () => {
+    const value = newDept.trim()
+    if (!value) return
+    if (draft.some((dept) => dept.toLowerCase() === value.toLowerCase())) {
+      setNotice('That department already exists.')
+      return
+    }
+    setDirty(true)
+    setNotice('')
+    setDraft([...draft, value])
+    setNewDept('')
+  }
+
+  const renameDept = (index: number, value: string) => {
+    setDirty(true)
+    setNotice('')
+    setDraft(draft.map((dept, i) => (i === index ? value : dept)))
+  }
+
+  const removeDept = (index: number) => {
+    setDirty(true)
+    setNotice('')
+    setDraft(draft.filter((_, i) => i !== index))
+  }
+
+  const save = () => {
+    const cleaned: BeoDepartment[] = []
+    for (const dept of draft) {
+      const value = dept.trim()
+      if (value && !cleaned.some((d) => d.toLowerCase() === value.toLowerCase())) {
+        cleaned.push(value)
+      }
+    }
+    if (cleaned.length === 0) {
+      setNotice('Keep at least one department.')
+      return
+    }
+    setDepartments(cleaned)
+    setDirty(false)
+    setNotice('Departments saved.')
+  }
+
+  // Warn about BEO Viewers whose department would no longer exist after saving.
+  const orphanedViewers = beoViewers.filter(
+    (viewer) => !draft.some((dept) => dept.trim() === viewer.department),
+  )
+
+  return (
+    <CollapsiblePanel title="Departments">
+      <p className="panel-subtitle">
+        These departments drive BEO sign-off and BEO Viewer assignments. Edit,
+        add, or remove them, then Save.
+      </p>
+
+      <div className="department-editor-list">
+        {draft.map((dept, index) => (
+          <div className="department-editor-row" key={index}>
+            <input
+              aria-label={`Department ${index + 1}`}
+              onChange={(event) => renameDept(index, event.target.value)}
+              value={dept}
+            />
+            <button
+              aria-label={`Remove ${dept}`}
+              className="user-admin-remove"
+              onClick={() => removeDept(index)}
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="department-editor-add">
+        <input
+          aria-label="New department name"
+          onChange={(event) => setNewDept(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              addDept()
+            }
+          }}
+          placeholder="New department name"
+          value={newDept}
+        />
+        <button className="secondary-action" onClick={addDept} type="button">
+          <Plus size={15} />
+          Add department
+        </button>
+      </div>
+
+      {orphanedViewers.length > 0 && (
+        <p className="panel-subtitle department-editor-warning">
+          {orphanedViewers.length} BEO Viewer(s) are assigned to a department you
+          removed. Reassign them in User management after saving.
+        </p>
+      )}
+
+      <div className="status-actions">
+        <button className="primary-action" disabled={!dirty} onClick={save} type="button">
+          <ShieldCheck size={16} />
+          Save departments
+        </button>
+      </div>
+      {notice && <p className="profile-notice">{notice}</p>}
+    </CollapsiblePanel>
+  )
+}
+
+/** Top-Management editor for per-role permissions (Top Management is always all). */
+function RolePermissionsPanel({
+  overrides,
+  setOverrides,
+}: {
+  overrides: RolePermissionOverrides
+  setOverrides: (
+    next:
+      | RolePermissionOverrides
+      | ((current: RolePermissionOverrides) => RolePermissionOverrides),
+  ) => void
+}) {
+  const buildDraft = (): Record<AuthRole, Set<Action>> => ({
+    top_management: new Set(ALL_ACTIONS),
+    manager: new Set(overrides.manager ?? DEFAULT_PERMISSIONS.manager),
+    staff: new Set(overrides.staff ?? DEFAULT_PERMISSIONS.staff),
+    beo_viewer: new Set(overrides.beo_viewer ?? DEFAULT_PERMISSIONS.beo_viewer),
+  })
+
+  const [draft, setDraft] = useState<Record<AuthRole, Set<Action>>>(buildDraft)
+  const [dirty, setDirty] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  // Re-sync from saved overrides during render (hydration / after save), unless
+  // there are unsaved edits — the React-endorsed alternative to a sync effect.
+  const [syncedFrom, setSyncedFrom] = useState(overrides)
+  if (!dirty && syncedFrom !== overrides) {
+    setSyncedFrom(overrides)
+    setDraft(buildDraft())
+  }
+
+  const toggle = (role: AuthRole, action: Action) => {
+    setDirty(true)
+    setNotice('')
+    setDraft((prev) => {
+      const nextSet = new Set(prev[role])
+      if (nextSet.has(action)) nextSet.delete(action)
+      else nextSet.add(action)
+      return { ...prev, [role]: nextSet }
+    })
+  }
+
+  const restoreDefaults = () => {
+    setDirty(true)
+    setNotice('')
+    setDraft({
+      top_management: new Set(ALL_ACTIONS),
+      manager: new Set(DEFAULT_PERMISSIONS.manager),
+      staff: new Set(DEFAULT_PERMISSIONS.staff),
+      beo_viewer: new Set(DEFAULT_PERMISSIONS.beo_viewer),
+    })
+  }
+
+  const save = () => {
+    const next: RolePermissionOverrides = {}
+    for (const role of EDITABLE_ROLES) {
+      next[role] = ALL_ACTIONS.filter((action) => draft[role].has(action))
+    }
+    setOverrides(next)
+    setDirty(false)
+    setNotice('Permissions saved.')
+  }
+
+  const groups = Array.from(new Set(ACTION_CATALOG.map((entry) => entry.group)))
+  const columns: AuthRole[] = ['top_management', ...EDITABLE_ROLES]
+
+  return (
+    <CollapsiblePanel title="Roles and permissions">
+      <p className="panel-subtitle">
+        Top Management always has full access. Tick what Managers, Staff, and BEO
+        Viewers can do, then Save.
+      </p>
+
+      <div className="permission-matrix-scroll">
+        <table className="permission-matrix">
+          <thead>
+            <tr>
+              <th scope="col">Permission</th>
+              {columns.map((role) => (
+                <th key={role} scope="col">
+                  {ROLE_LABELS[role].en}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((group) => (
+              <Fragment key={group}>
+                <tr className="permission-matrix-group">
+                  <td colSpan={columns.length + 1}>{group}</td>
+                </tr>
+                {ACTION_CATALOG.filter((entry) => entry.group === group).map((entry) => (
+                  <tr key={entry.key}>
+                    <td>{entry.label}</td>
+                    {columns.map((role) => {
+                      const locked = role === 'top_management'
+                      return (
+                        <td key={role}>
+                          <input
+                            aria-label={`${entry.label} for ${ROLE_LABELS[role].en}`}
+                            checked={draft[role].has(entry.key)}
+                            disabled={locked}
+                            onChange={() => toggle(role, entry.key)}
+                            type="checkbox"
+                          />
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="status-actions">
+        <button className="primary-action" disabled={!dirty} onClick={save} type="button">
+          <ShieldCheck size={16} />
+          Save permissions
+        </button>
+        <button className="secondary-action" onClick={restoreDefaults} type="button">
+          Restore defaults
+        </button>
+      </div>
+      {notice && <p className="profile-notice">{notice}</p>}
+    </CollapsiblePanel>
   )
 }
 
@@ -8244,6 +9128,33 @@ function PanelHeader({
         </button>
       )}
     </div>
+  )
+}
+
+/** A panel whose body can be collapsed behind a clickable header. */
+function CollapsiblePanel({
+  children,
+  defaultOpen = false,
+  title,
+}: {
+  children: ReactNode
+  defaultOpen?: boolean
+  title: string
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <section className={open ? 'panel collapsible-panel is-open' : 'panel collapsible-panel'}>
+      <button
+        aria-expanded={open}
+        className="collapsible-header"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <h2>{title}</h2>
+        <ChevronDown className="collapsible-chevron" size={18} />
+      </button>
+      {open && <div className="collapsible-body">{children}</div>}
+    </section>
   )
 }
 

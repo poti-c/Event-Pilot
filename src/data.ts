@@ -32,20 +32,16 @@ export type HistoryEntry = {
 
 // BEO departments that receive their own instructions and sign-off. A view-only
 // "department" user is tied to one of these and acknowledges their section.
-export type BeoDepartment =
-  | 'Front office'
-  | 'Kitchen'
-  | 'Food & Beverage'
-  | 'Engineering'
-  | 'Housekeeping'
-  | 'Accounting'
+// Departments are editable in Settings, so the type is an open string; the
+// constant below is only the default seed / fallback list.
+export type BeoDepartment = string
 
 export const BEO_DEPARTMENTS: BeoDepartment[] = [
-  'Front office',
+  'Front Office',
+  'House Keeping',
+  'Restaurant',
   'Kitchen',
-  'Food & Beverage',
   'Engineering',
-  'Housekeeping',
   'Accounting',
 ]
 
@@ -298,11 +294,11 @@ export const initialBookings: EventBooking[] = [
       { id: 'BKG-2401-DH3', timestamp: '2026-05-30', note: 'Line items updated' },
     ],
     departmentInstructions: {
-      'Front office': 'VIP entrance at north lobby; brief bell desk to escort the CEO party. Discreet, quick check-in.',
+      'Front Office': 'VIP entrance at north lobby; brief bell desk to escort the CEO party. Discreet, quick check-in.',
       Kitchen: 'Royal Thai set menu for 165 guaranteed. No-pork table for 24 guests — clearly labelled. Final count review by 14:00.',
-      'Food & Beverage': 'Coffee and petit fours at close. Wine service paced to the CEO speech transition; keep pours discreet.',
+      Restaurant: 'Coffee and petit fours at close. Wine service paced to the CEO speech transition; keep pours discreet.',
       Engineering: 'Wireless microphones, LED wall, and podium uplight tested by 17:00. Standby technician during speeches.',
-      Housekeeping: 'Ballroom A deep-cleaned pre-set; refresh restrooms at 20:00. Reset room after teardown at 23:00.',
+      'House Keeping': 'Ballroom A deep-cleaned pre-set; refresh restrooms at 20:00. Reset room after teardown at 23:00.',
       Accounting: 'Partial payment approved by finance. Issue final invoice after beverage actuals are confirmed.',
     },
   },
