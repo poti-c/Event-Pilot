@@ -2182,7 +2182,7 @@ function App() {
       <div className="workbench">
         <header className="topbar no-print">
           <div>
-            <p className="eyebrow">Venue CRM, BEO, booking, and operations</p>
+            <p className="eyebrow">{propertyProfile.name}</p>
             <h1>{moduleTitle(activeModule)}</h1>
           </div>
 
