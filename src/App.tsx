@@ -5922,21 +5922,33 @@ function emptyProduct(): Product {
   }
 }
 
+const ADD_NEW_CATEGORY = '__add_new_category__'
+
 function ProductDetailView({
   canDelete,
+  categories,
   onBack,
   onDelete,
   onSave,
   product,
 }: {
   canDelete: boolean
+  categories: string[]
   onBack: () => void
   onDelete: () => void
   onSave: (product: Product) => void
   product: Product
 }) {
   const [draft, setDraft] = useState<Product>(product)
+  const [addingCategory, setAddingCategory] = useState(false)
+  // Remembered so cancelling "Add new" without typing restores the prior choice.
+  const [prevCategory, setPrevCategory] = useState(product.category)
   const isDirty = JSON.stringify(draft) !== JSON.stringify(product)
+
+  // Ensure the current value is always selectable even if it isn't in the list.
+  const categoryChoices = Array.from(
+    new Set([...categories, draft.category].filter(Boolean)),
+  ).sort((a, b) => a.localeCompare(b))
 
   const setField = <K extends keyof Product>(field: K, value: Product[K]) => {
     setDraft((current) => ({ ...current, [field]: value }))
@@ -5977,10 +5989,46 @@ function ProductDetailView({
             <input onChange={(event) => setField('name', event.target.value)} value={draft.name} />
           </FormField>
           <FormField label="Category">
-            <input
-              onChange={(event) => setField('category', event.target.value)}
-              value={draft.category}
-            />
+            {addingCategory ? (
+              <div className="category-add">
+                <input
+                  autoFocus
+                  onChange={(event) => setField('category', event.target.value)}
+                  placeholder="New category name"
+                  value={draft.category}
+                />
+                <button
+                  className="text-action"
+                  onClick={() => {
+                    if (!draft.category.trim()) setField('category', prevCategory)
+                    setAddingCategory(false)
+                  }}
+                  type="button"
+                >
+                  Choose from list
+                </button>
+              </div>
+            ) : (
+              <select
+                onChange={(event) => {
+                  if (event.target.value === ADD_NEW_CATEGORY) {
+                    setPrevCategory(draft.category)
+                    setField('category', '')
+                    setAddingCategory(true)
+                  } else {
+                    setField('category', event.target.value)
+                  }
+                }}
+                value={draft.category}
+              >
+                {categoryChoices.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+                <option value={ADD_NEW_CATEGORY}>＋ Add new category…</option>
+              </select>
+            )}
           </FormField>
           <FormField label="Description">
             <textarea
@@ -6077,10 +6125,22 @@ function ProductsView({
 
   const viewingProduct = products.find((product) => product.id === viewingProductId)
 
+  // Categories offered in the detail view's dropdown: the standard groupings
+  // plus any category already in use across products.
+  const categoryOptions = Array.from(
+    new Set(
+      [
+        ...PACKAGE_SECTIONS.flatMap((section) => section.categories),
+        ...products.map((product) => product.category),
+      ].filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b))
+
   if (viewingProduct) {
     return (
       <ProductDetailView
         canDelete={canEdit}
+        categories={categoryOptions}
         onBack={() => setViewingProductId(null)}
         onDelete={() => deleteProduct(viewingProduct.id)}
         onSave={(updated) =>

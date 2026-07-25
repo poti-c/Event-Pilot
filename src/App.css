@@ -4003,6 +4003,15 @@ button.opportunity-card {
   font-size: 14px;
 }
 
+.category-add {
+  display: grid;
+  gap: 6px;
+}
+
+.category-add .text-action {
+  justify-self: start;
+}
+
 .integration-card {
   display: flex;
   align-items: flex-start;
