@@ -19,18 +19,24 @@ import {
   ExternalLink,
   FileText,
   Filter,
+  HelpCircle,
   LayoutDashboard,
   LayoutGrid,
+  LifeBuoy,
   List,
   LogOut,
+  Mail,
   MapPinned,
+  MessageSquare,
   Plus,
   ReceiptText,
   RefreshCcw,
+  Scale,
   Search,
   Send,
   Settings,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   TriangleAlert,
   Users,
@@ -1053,7 +1059,7 @@ function bookingPrefillFromLead(lead: Lead): NewBookingFormState {
 
 type SaaSTierId = 'Starter' | 'Gold' | 'Platinum'
 type ClientAccountStatus = 'Active' | 'Pilot' | 'Suspended'
-type AdminConsoleTab = 'Clients' | 'Plans' | 'Company' | 'Security'
+type AdminConsoleTab = 'Clients' | 'Packages' | 'Company' | 'Security'
 
 type SaaSPlan = {
   id: SaaSTierId
@@ -7144,7 +7150,7 @@ function AdminConsoleView({
       </section>
 
       <div className="admin-tabs" role="tablist" aria-label="Admin console sections">
-        {(['Clients', 'Plans', 'Company', 'Security'] as const).map((tab) => (
+        {(['Clients', 'Packages', 'Company', 'Security'] as const).map((tab) => (
           <button
             className={activeTab === tab ? 'filter-chip filter-all active' : 'filter-chip'}
             key={tab}
@@ -7153,7 +7159,7 @@ function AdminConsoleView({
             role="tab"
             type="button"
           >
-            {tab}
+            {tab === 'Packages' ? 'Packages & Expansions' : tab}
           </button>
         ))}
       </div>
@@ -7373,7 +7379,7 @@ function AdminConsoleView({
         </section>
       )}
 
-      {activeTab === 'Plans' && (
+      {activeTab === 'Packages' && (
         <div className="page-stack">
           <section className="plan-grid">
             {adminPlans.map((plan) => {
@@ -8142,6 +8148,12 @@ function SettingsView({
           </div>
         </CollapsiblePanel>
       )}
+
+      <SupportPanel role={account.role} />
+
+      <p className="app-version">
+        EventPilot V.1.1.1 by NNR-Solutions {new Date().getFullYear()} ©
+      </p>
     </div>
   )
 }
@@ -9047,6 +9059,285 @@ function RolePermissionsPanel({
       </div>
       {notice && <p className="profile-notice">{notice}</p>}
     </CollapsiblePanel>
+  )
+}
+
+/** Lightweight modal overlay (Event Pilot has no generic dialog otherwise). */
+function Modal({
+  children,
+  footer,
+  icon: Icon,
+  onClose,
+  title,
+}: {
+  children: ReactNode
+  footer?: ReactNode
+  icon?: LucideIcon
+  onClose: () => void
+  title: string
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        aria-modal="true"
+        className="modal-card"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="modal-head">
+          <h2>
+            {Icon && <Icon size={18} />}
+            {title}
+          </h2>
+          <button
+            aria-label="Close"
+            className="modal-close"
+            onClick={onClose}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+        <div className="modal-body">{children}</div>
+        {footer && <div className="modal-foot">{footer}</div>}
+      </div>
+    </div>
+  )
+}
+
+type SupportDialog = 'packages' | 'help' | 'feedback' | 'compatibility' | 'legal' | null
+
+// Support address for Help/Feedback. NNR-Solutions' general inbox.
+const SUPPORT_EMAIL = 'info@nnr-solutions.com'
+
+/**
+ * Support section shown at the bottom of Settings. Mirrors the Kaizen System's
+ * pattern (never its data): Packages & Expansions draws from the same plan /
+ * expansion catalog the vendor console manages; the rest are static help,
+ * feedback, compatibility, and IP dialogs.
+ */
+function SupportPanel({ role }: { role: AuthRole }) {
+  const [dialog, setDialog] = useState<SupportDialog>(null)
+  const close = () => setDialog(null)
+
+  const rows: { key: SupportDialog; icon: LucideIcon; label: string; sub: string }[] = [
+    { key: 'help', icon: HelpCircle, label: 'Help', sub: 'Get assistance from our team' },
+    { key: 'feedback', icon: MessageSquare, label: 'Feedback', sub: 'Share your thoughts with us' },
+    { key: 'compatibility', icon: Smartphone, label: 'Compatibility', sub: 'Supported devices & browsers' },
+    { key: 'legal', icon: Scale, label: 'Intellectual Property', sub: 'Right of use & ownership' },
+  ]
+
+  const emailButton = (subject: string) => (
+    <a className="primary-action" href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}`}>
+      <Mail size={16} />
+      Send Email
+    </a>
+  )
+
+  return (
+    <section className="panel support-panel">
+      <div className="support-head">
+        <LifeBuoy size={16} />
+        <h2>Support</h2>
+      </div>
+
+      <div className="support-list">
+        {role !== 'staff' && (
+          <button className="support-row" onClick={() => setDialog('packages')} type="button">
+            <span className="support-row-icon is-brand">
+              <Sparkles size={18} />
+            </span>
+            <span className="support-row-text">
+              <strong>Packages &amp; Expansions</strong>
+              <span>Your plan, upgrades &amp; add-ons</span>
+            </span>
+            <ChevronRight className="support-row-chevron" size={18} />
+          </button>
+        )}
+        {rows.map((row) => (
+          <button
+            className="support-row"
+            key={row.key}
+            onClick={() => setDialog(row.key)}
+            type="button"
+          >
+            <span className="support-row-icon">
+              <row.icon size={18} />
+            </span>
+            <span className="support-row-text">
+              <strong>{row.label}</strong>
+              <span>{row.sub}</span>
+            </span>
+            <ChevronRight className="support-row-chevron" size={18} />
+          </button>
+        ))}
+      </div>
+
+      {dialog === 'packages' && (
+        <Modal
+          footer={
+            <a
+              className="primary-action"
+              href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('EventPilot — Plan enquiry')}`}
+            >
+              <Mail size={16} />
+              Contact us to change plan
+            </a>
+          }
+          icon={Sparkles}
+          onClose={close}
+          title="Packages & Expansions"
+        >
+          <p className="support-blurb">
+            Your EventPilot plan and the upgrades &amp; add-ons available from
+            NNR-Solutions. Plans are managed by NNR-Solutions — contact us to
+            change yours.
+          </p>
+
+          <h3 className="support-subhead">Plans</h3>
+          {initialSaasPlans.map((plan) => (
+            <div className="support-plan" key={plan.id}>
+              <div className="support-plan-head">
+                <strong>{plan.name}</strong>
+                <span>{plan.annualPrice > 0 ? `${money(plan.annualPrice)} / year` : 'Free'}</span>
+              </div>
+              <p>{plan.description}</p>
+              <ul>
+                <li>
+                  {plan.includedUsers} included user{plan.includedUsers === 1 ? '' : 's'}
+                  {plan.additionalUserPrice > 0
+                    ? ` · ${money(plan.additionalUserPrice)} per extra seat`
+                    : ''}
+                </li>
+                <li>
+                  {plan.bookingLimit == null
+                    ? 'Unlimited bookings'
+                    : `${plan.bookingLimit} bookings included`}
+                </li>
+              </ul>
+            </div>
+          ))}
+
+          <h3 className="support-subhead">Expansion packs</h3>
+          {initialExpansionPacks
+            .filter((pack) => pack.status === 'Available')
+            .map((pack) => (
+              <div className="support-plan" key={pack.id}>
+                <div className="support-plan-head">
+                  <strong>{pack.name}</strong>
+                  <span>{money(pack.annualPrice)}</span>
+                </div>
+                <p>{pack.description}</p>
+                <ul>
+                  <li>{pack.pricingUnit}</li>
+                  <li>Recommended for {pack.recommendedFor.toLowerCase()}</li>
+                </ul>
+              </div>
+            ))}
+        </Modal>
+      )}
+
+      {dialog === 'help' && (
+        <Modal
+          footer={emailButton('EventPilot — Help Request')}
+          icon={HelpCircle}
+          onClose={close}
+          title="Help"
+        >
+          <p className="support-blurb">
+            We're here to help. Let us know what you need a hand with and our team
+            will get back to you as soon as we can.
+          </p>
+          <div className="support-contact">
+            <Mail size={16} />
+            <span>{SUPPORT_EMAIL}</span>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === 'feedback' && (
+        <Modal
+          footer={emailButton('EventPilot — Feedback')}
+          icon={MessageSquare}
+          onClose={close}
+          title="Feedback"
+        >
+          <p className="support-blurb">
+            We read and consider every message. Your feedback helps make
+            EventPilot better.
+          </p>
+          <div className="support-contact">
+            <Mail size={16} />
+            <span>{SUPPORT_EMAIL}</span>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === 'compatibility' && (
+        <Modal
+          footer={
+            <button className="secondary-action" onClick={close} type="button">
+              Close
+            </button>
+          }
+          icon={Smartphone}
+          onClose={close}
+          title="Compatibility"
+        >
+          <p className="support-blurb">
+            EventPilot is a web app that runs smoothly on both desktops and mobile
+            devices. For the best experience, open it in your browser and add it to
+            your home screen — it will then run full-screen like a native app.
+          </p>
+          <p className="support-muted">
+            Recommended: a current version of Chrome, Safari, Edge, or Firefox on
+            desktop, or iPhone on iOS 16.4+ (Safari) and Android 10+ (Chrome).
+          </p>
+        </Modal>
+      )}
+
+      {dialog === 'legal' && (
+        <Modal
+          footer={
+            <button className="secondary-action" onClick={close} type="button">
+              Close
+            </button>
+          }
+          icon={Scale}
+          onClose={close}
+          title="Intellectual Property & Right of Use"
+        >
+          <p>
+            All intellectual property rights relating to this application,
+            including but not limited to its software, source code, system design,
+            user interface, workflow logic, database structure, documentation,
+            name, logo, and related materials, shall remain the exclusive property
+            of <strong>NNR-Solutions Co., Ltd.</strong>
+          </p>
+          <p>
+            Authorised users are granted a limited, non-exclusive,
+            non-transferable, and revocable right to access and use the application
+            solely for event, booking, BEO, and related operational purposes. This
+            right of use does not transfer any ownership rights in the application
+            to any user, organisation, contractor, or third party.
+          </p>
+          <p>
+            Users shall not copy, modify, reproduce, distribute, sell, sublicense,
+            reverse-engineer, decompile, or create derivative works from the
+            application, in whole or in part, without prior written permission from{' '}
+            <strong>NNR-Solutions Co., Ltd.</strong>
+          </p>
+        </Modal>
+      )}
+    </section>
   )
 }
 
