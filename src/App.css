@@ -3743,6 +3743,8 @@ button.opportunity-card {
 
 .collapsible-header h2 {
   margin: 0;
+  font-size: 16px;
+  font-weight: 750;
 }
 
 .collapsible-chevron {
