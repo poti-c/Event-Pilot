@@ -162,7 +162,6 @@ export type Product = {
   availability: string
   displayOnBeo: boolean
   displayPrice: boolean
-  tags: string[]
   // Optional structured detail used by the catalogue cards: a checklist of
   // what a package includes, and selectable price tiers for menus / durations.
   inclusions?: string[]
@@ -664,7 +663,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['wedding', 'pre-wedding', 'photography'],
     inclusions: [
       '5 hours pre-wedding venue photoshoot',
       'Day-use resort room for changing and preparation',
@@ -681,7 +679,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['wedding', 'thai', 'lanna', 'ceremony'],
     inclusions: [
       'Back drop with floral arch',
       "Traditional 'Khan Mak' set",
@@ -712,7 +709,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['wedding', 'buddhist', 'ceremony'],
     inclusions: [
       'Buddha image and flower decoration at altar',
       'Inviting 5 monks and master of ceremony for blessing',
@@ -731,7 +727,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['wedding', 'buddhist', 'ceremony'],
     inclusions: [
       'Buddha image and flower decoration at altar',
       'Inviting 9 monks and master of ceremony for blessing',
@@ -750,7 +745,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['wedding', 'western', 'ceremony'],
     inclusions: [
       'Back drop with floral arch',
       'Personalized welcome signage',
@@ -780,7 +774,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['wedding', 'reception', 'decoration'],
     inclusions: [
       'Back drop with floral arch',
       'Welcome floral backdrop',
@@ -817,7 +810,6 @@ export const products: Product[] = [
     availability: 'By reservation',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['venue', 'rental', 'riverfront'],
   },
   {
     id: 'PRD-R02',
@@ -831,7 +823,6 @@ export const products: Product[] = [
     availability: 'By reservation',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['venue', 'rental', 'glass-house'],
   },
   {
     id: 'PRD-R03',
@@ -844,7 +835,6 @@ export const products: Product[] = [
     availability: 'By reservation',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['venue', 'rental', 'huan-kammung'],
   },
   {
     id: 'PRD-R04',
@@ -857,7 +847,6 @@ export const products: Product[] = [
     availability: 'By reservation',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['venue', 'rental', 'garden'],
   },
 
   // ── Food & Beverage — menus (per person; three tiers to choose) ──
@@ -872,7 +861,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'coffee-break'],
     priceTiers: [{ price: 550 }, { price: 750 }, { price: 1000 }],
   },
   {
@@ -886,7 +874,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'thai', 'kad-mua'],
     priceTiers: [{ price: 850 }, { price: 1000 }, { price: 1200 }],
   },
   {
@@ -900,7 +887,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'cocktail'],
     priceTiers: [{ price: 850 }, { price: 1000 }, { price: 1400 }],
   },
   {
@@ -914,7 +900,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'set-menu', 'thai'],
     priceTiers: [{ price: 1200 }, { price: 1500 }, { price: 1800 }],
   },
   {
@@ -928,7 +913,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'set-menu', 'fusion'],
     priceTiers: [{ price: 1500 }, { price: 1800 }, { price: 2100 }],
   },
   {
@@ -942,7 +926,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'set-menu', 'western'],
     priceTiers: [{ price: 1700 }, { price: 2000 }, { price: 2300 }],
   },
   {
@@ -956,7 +939,6 @@ export const products: Product[] = [
     availability: 'Minimum 50 persons',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'buffet', 'thai'],
     priceTiers: [{ price: 1100 }, { price: 1300 }, { price: 1500 }],
   },
   {
@@ -970,7 +952,6 @@ export const products: Product[] = [
     availability: 'Minimum 50 persons',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['catering', 'buffet', 'international'],
     priceTiers: [{ price: 1200 }, { price: 1500 }, { price: 1800 }],
   },
 
@@ -986,7 +967,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'free-flow', 'soft-drinks'],
     priceTiers: [
       { label: '1 hour', price: 150 },
       { label: '2 hours', price: 270 },
@@ -1004,7 +984,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'free-flow', 'beer'],
     priceTiers: [
       { label: '1 hour', price: 500 },
       { label: '2 hours', price: 800 },
@@ -1022,7 +1001,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'free-flow', 'wine'],
     priceTiers: [
       { label: '1 hour', price: 1000 },
       { label: '2 hours', price: 1600 },
@@ -1041,7 +1019,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'open-bar', 'spirits'],
     priceTiers: [
       { label: '1 hour', price: 1200 },
       { label: '2 hours', price: 1900 },
@@ -1059,7 +1036,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'draft-beer', 'chang'],
   },
   {
     id: 'PRD-B06',
@@ -1072,7 +1048,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'draft-beer', 'singha'],
   },
   {
     id: 'PRD-B07',
@@ -1085,7 +1060,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'draft-beer', 'heineken'],
   },
   {
     id: 'PRD-B08',
@@ -1098,7 +1072,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'corkage', 'wine'],
   },
   {
     id: 'PRD-B09',
@@ -1111,7 +1084,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'corkage', 'champagne'],
   },
   {
     id: 'PRD-B10',
@@ -1124,7 +1096,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['beverage', 'corkage', 'package'],
     priceTiers: [
       { label: '1–12 bottles', price: 3000 },
       { label: '13–24 bottles', price: 5000 },
@@ -1144,7 +1115,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['add-on', 'lighting'],
   },
   {
     id: 'PRD-S02',
@@ -1157,7 +1127,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['add-on', 'entertainment', 'band'],
   },
   {
     id: 'PRD-S03',
@@ -1170,7 +1139,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['add-on', 'entertainment', 'band'],
   },
   {
     id: 'PRD-S04',
@@ -1183,7 +1151,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['add-on', 'entertainment', 'band'],
   },
   {
     id: 'PRD-S05',
@@ -1196,7 +1163,6 @@ export const products: Product[] = [
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: true,
-    tags: ['add-on', 'mc', 'coordination'],
   },
 ]
 

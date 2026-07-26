@@ -5918,7 +5918,6 @@ function emptyProduct(): Product {
     availability: 'Available',
     displayOnBeo: true,
     displayPrice: false,
-    tags: [],
   }
 }
 
@@ -6216,7 +6215,6 @@ function ProductsView({
         {tiers.length > 0 && product.availability && product.availability !== 'Available' && (
           <p className="resource-note">{product.availability}</p>
         )}
-        <TagList items={product.tags} />
         {product.sourceUrl && (
           <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">
             <ExternalLink size={14} />
