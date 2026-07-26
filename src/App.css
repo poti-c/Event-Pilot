@@ -2827,8 +2827,42 @@ button.opportunity-card {
 .resource-card {
   min-width: 0;
   display: grid;
+  align-content: start;
   gap: 12px;
   padding: 16px;
+}
+
+/* "See more" link on a product card, right-aligned under the inclusions. */
+.see-more-link {
+  justify-self: end;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent, #235f8f);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.see-more-link:hover {
+  text-decoration: underline;
+}
+
+/* Product cards flow content from the top but pin the price, the Show on BEO
+   row, and the Edit / Delete actions to the bottom, so those line up across a
+   row of cards. The auto margin sits on whichever price row the card uses. */
+.package-section .resource-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.package-section .resource-card .resource-meta,
+.package-section .resource-card .tier-select {
+  margin-top: auto;
 }
 
 /* Grouped catalogue sections on the Packages & Products page. */
@@ -3902,6 +3936,23 @@ button.opportunity-card {
   gap: 8px;
   margin: 0;
   font-size: 16px;
+  color: var(--text-strong);
+}
+
+.modal-back {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.modal-back:hover {
+  background: var(--surface-soft);
   color: var(--text-strong);
 }
 

@@ -6147,9 +6147,13 @@ function ProductsView({
   setProducts: (next: Product[] | ((current: Product[]) => Product[])) => void
 }) {
   const [viewingProductId, setViewingProductId] = useState<string | null>(null)
+  // Read-only "See more" details popup (separate from the Edit view).
+  const [previewProductId, setPreviewProductId] = useState<string | null>(null)
   // Which price tier is highlighted per product (quoting reference only).
   const [tierByProduct, setTierByProduct] = useState<Record<string, number>>({})
   const canEdit = hasPermission(account.role, 'packages:edit')
+  // Cards show at most this many inclusions before a "See more" link.
+  const MAX_CARD_INCLUSIONS = 5
 
   const createProduct = () => {
     const product = emptyProduct()
@@ -6164,6 +6168,7 @@ function ProductsView({
   }
 
   const viewingProduct = products.find((product) => product.id === viewingProductId)
+  const previewProduct = products.find((product) => product.id === previewProductId)
 
   // Categories offered in the detail view's dropdown: the standard groupings
   // plus any category already in use across products.
@@ -6213,13 +6218,23 @@ function ProductsView({
         {product.description && <p>{product.description}</p>}
         {product.inclusions && product.inclusions.length > 0 && (
           <ul className="inclusion-list">
-            {product.inclusions.map((item, index) => (
+            {product.inclusions.slice(0, MAX_CARD_INCLUSIONS).map((item, index) => (
               <li key={index}>
                 <Check size={14} />
                 <span>{item}</span>
               </li>
             ))}
           </ul>
+        )}
+        {product.inclusions && product.inclusions.length > MAX_CARD_INCLUSIONS && (
+          <button
+            className="see-more-link"
+            onClick={() => setPreviewProductId(product.id)}
+            type="button"
+          >
+            See more
+            <ChevronRight size={14} />
+          </button>
         )}
         {tiers.length > 0 ? (
           <div className="tier-select">
@@ -6309,6 +6324,38 @@ function ProductsView({
           ))}
         </div>
       </section>
+
+      {previewProduct && (
+        <Modal
+          icon={Sparkles}
+          onBack={() => setPreviewProductId(null)}
+          onClose={() => setPreviewProductId(null)}
+          title={previewProduct.name}
+        >
+          <p className="support-muted">{previewProduct.category}</p>
+          {previewProduct.description && <p>{previewProduct.description}</p>}
+          {previewProduct.inclusions && previewProduct.inclusions.length > 0 && (
+            <>
+              <h3 className="support-subhead">Inclusions</h3>
+              <ul className="inclusion-list">
+                {previewProduct.inclusions.map((item, index) => (
+                  <li key={index}>
+                    <Check size={14} />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          <div className="resource-meta">
+            <span>
+              {previewProduct.displayPrice ? priceLabel(previewProduct.price) : 'Quote required'}
+            </span>
+            <span>{previewProduct.unit}</span>
+            <span>{previewProduct.availability}</span>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -9166,12 +9213,14 @@ function Modal({
   children,
   footer,
   icon: Icon,
+  onBack,
   onClose,
   title,
 }: {
   children: ReactNode
   footer?: ReactNode
   icon?: LucideIcon
+  onBack?: () => void
   onClose: () => void
   title: string
 }) {
@@ -9193,6 +9242,16 @@ function Modal({
       >
         <div className="modal-head">
           <h2>
+            {onBack && (
+              <button
+                aria-label="Back"
+                className="modal-back"
+                onClick={onBack}
+                type="button"
+              >
+                <ChevronLeft size={18} />
+              </button>
+            )}
             {Icon && <Icon size={18} />}
             {title}
           </h2>
