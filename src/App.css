@@ -2960,6 +2960,16 @@ button.opportunity-card {
   text-transform: uppercase;
 }
 
+/* Resource cards stack the category/status label above the name. Pack the two
+   at the start so a stretched card (e.g. grid-equal-height product cards) never
+   spreads them apart via the shared justify-content: space-between. */
+.resource-head {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
 .progress-track,
 .bar-track {
   height: 8px;
@@ -4009,6 +4019,26 @@ button.opportunity-card {
 }
 
 .category-add .text-action {
+  justify-self: start;
+}
+
+.inclusion-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.inclusion-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inclusion-editor-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.inclusion-add {
   justify-self: start;
 }
 

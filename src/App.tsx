@@ -5959,7 +5959,9 @@ function ProductDetailView({
   }
 
   const handleSave = () => {
-    onSave(draft)
+    // Drop blank inclusion rows so the card never renders empty checklist items.
+    const inclusions = (draft.inclusions ?? []).map((item) => item.trim()).filter(Boolean)
+    onSave({ ...draft, inclusions })
     onBack()
   }
 
@@ -6035,6 +6037,45 @@ function ProductDetailView({
               value={draft.description}
             />
           </FormField>
+          <div className="form-field">
+            <span>Inclusions</span>
+            <div className="inclusion-editor">
+              {(draft.inclusions ?? []).map((item, index) => (
+                <div className="inclusion-editor-row" key={index}>
+                  <input
+                    aria-label={`Inclusion ${index + 1}`}
+                    onChange={(event) => {
+                      const next = [...(draft.inclusions ?? [])]
+                      next[index] = event.target.value
+                      setField('inclusions', next)
+                    }}
+                    value={item}
+                  />
+                  <button
+                    aria-label={`Remove inclusion ${index + 1}`}
+                    className="user-admin-remove"
+                    onClick={() =>
+                      setField(
+                        'inclusions',
+                        (draft.inclusions ?? []).filter((_, i) => i !== index),
+                      )
+                    }
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button
+                className="secondary-action inclusion-add"
+                onClick={() => setField('inclusions', [...(draft.inclusions ?? []), ''])}
+                type="button"
+              >
+                <Plus size={15} />
+                Add inclusion
+              </button>
+            </div>
+          </div>
           <FormField label="Price">
             <input
               min="0"
