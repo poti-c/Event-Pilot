@@ -85,6 +85,7 @@ import type {
   LeadStage,
   LineItem,
   PaymentStatus,
+  PriceTier,
   Product,
   PropertyProfile,
 } from './data'
@@ -5387,11 +5388,37 @@ function LineItemsEditor({
     const unitPrice = product.price ?? product.priceTiers?.[0]?.price ?? 0
     onChange([
       ...lineItems,
-      { id: `LI-${Date.now()}`, description: product.name, quantity: 1, unitPrice },
+      {
+        id: `LI-${Date.now()}`,
+        description: product.name,
+        quantity: 1,
+        unitPrice,
+        productId: product.id,
+        tierIndex: product.priceTiers?.length ? 0 : undefined,
+      },
     ])
   }
   const removeItem = (id: string) => {
     onChange(lineItems.filter((item) => item.id !== id))
+  }
+  // The catalog product an item's options come from — matched by id when
+  // added from the catalog, or by name so pre-existing items pick it up too.
+  const optionsFor = (item: LineItem) => {
+    const product = item.productId
+      ? catalog.find((entry) => entry.id === item.productId)
+      : catalog.find((entry) => entry.name === item.description)
+    return { product, tiers: product?.priceTiers ?? [] }
+  }
+  const selectTier = (item: LineItem, tiers: PriceTier[], index: number, productId: string) => {
+    const tier = tiers[index]
+    if (!tier) return
+    onChange(
+      lineItems.map((entry) =>
+        entry.id === item.id
+          ? { ...entry, productId, tierIndex: index, unitPrice: tier.price }
+          : entry,
+      ),
+    )
   }
   // Group catalog options by category, preserving the seed order.
   const catalogGroups = catalog.reduce<{ category: string; items: Product[] }[]>(
@@ -5413,51 +5440,69 @@ function LineItemsEditor({
         <span>Total</span>
         <span />
       </div>
-      {lineItems.map((item) => (
-        <div className="line-items-row" key={item.id}>
-          {editable ? (
-            <input
-              onChange={(event) => updateItem(item.id, 'description', event.target.value)}
-              value={item.description}
-            />
-          ) : (
-            <span>{item.description}</span>
-          )}
-          {editable ? (
-            <input
-              min="0"
-              onChange={(event) => updateItem(item.id, 'quantity', Number(event.target.value))}
-              type="number"
-              value={item.quantity}
-            />
-          ) : (
-            <span>{item.quantity}</span>
-          )}
-          {editable ? (
-            <input
-              min="0"
-              onChange={(event) => updateItem(item.id, 'unitPrice', Number(event.target.value))}
-              type="number"
-              value={item.unitPrice}
-            />
-          ) : (
-            <span>{money(item.unitPrice)}</span>
-          )}
-          <strong>{money(item.quantity * item.unitPrice)}</strong>
-          {editable ? (
-            <button
-              aria-label="Remove line item"
-              className="text-action"
-              onClick={() => removeItem(item.id)}
-              type="button"
-            >
-              &times;
-            </button>
-          ) : (
-            <span />
-          )}
-        </div>
-      ))}
+      {lineItems.map((item) => {
+        const { product, tiers } = optionsFor(item)
+        return (
+          <div className="line-items-row" key={item.id}>
+            <div className="line-item-desc">
+              {editable ? (
+                <input
+                  onChange={(event) => updateItem(item.id, 'description', event.target.value)}
+                  value={item.description}
+                />
+              ) : (
+                <span>{item.description}</span>
+              )}
+              {editable && product && tiers.length > 0 && (
+                <select
+                  aria-label={`${item.description || 'Line item'} option`}
+                  onChange={(event) => selectTier(item, tiers, Number(event.target.value), product.id)}
+                  value={item.tierIndex ?? 0}
+                >
+                  {tiers.map((tier, index) => (
+                    <option key={index} value={index}>
+                      {tier.label ? `${tier.label} — ${money(tier.price)}` : money(tier.price)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {editable ? (
+              <input
+                min="0"
+                onChange={(event) => updateItem(item.id, 'quantity', Number(event.target.value))}
+                type="number"
+                value={item.quantity}
+              />
+            ) : (
+              <span>{item.quantity}</span>
+            )}
+            {editable ? (
+              <input
+                min="0"
+                onChange={(event) => updateItem(item.id, 'unitPrice', Number(event.target.value))}
+                type="number"
+                value={item.unitPrice}
+              />
+            ) : (
+              <span>{money(item.unitPrice)}</span>
+            )}
+            <strong>{money(item.quantity * item.unitPrice)}</strong>
+            {editable ? (
+              <button
+                aria-label="Remove line item"
+                className="text-action"
+                onClick={() => removeItem(item.id)}
+                type="button"
+              >
+                &times;
+              </button>
+            ) : (
+              <span />
+            )}
+          </div>
+        )
+      })}
       {editable && (
         <div className="line-items-actions">
           <button className="secondary-action" onClick={addItem} type="button">
@@ -5691,8 +5736,17 @@ function DocumentsView({
 }) {
   const [isEditing, setIsEditing] = useState(false)
   const canEdit = hasPermission(account.role, 'proposal:edit')
-  const lineItems = getLineItems(booking)
-  const discount = getDiscount(booking)
+  const savedLineItems = getLineItems(booking)
+  const savedDiscount = getDiscount(booking)
+  // While editing, line items and discount are held as a local draft — nothing
+  // reaches the booking until Save changes is clicked.
+  const [draftLineItems, setDraftLineItems] = useState<LineItem[]>(savedLineItems)
+  const [draftDiscount, setDraftDiscount] = useState<Discount>(savedDiscount)
+  const isDirty =
+    JSON.stringify(draftLineItems) !== JSON.stringify(savedLineItems) ||
+    JSON.stringify(draftDiscount) !== JSON.stringify(savedDiscount)
+  const lineItems = isEditing ? draftLineItems : savedLineItems
+  const discount = isEditing ? draftDiscount : savedDiscount
   const subtotal = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
   const discountValue = discountAmount(subtotal, discount)
   const netOfDiscount = subtotal - discountValue
@@ -5703,17 +5757,38 @@ function DocumentsView({
     first.timestamp.localeCompare(second.timestamp),
   )
 
+  // True if it's safe to navigate away right now — either nothing to lose, or
+  // the user confirmed discarding the unsaved draft.
+  const confirmDiscardIfDirty = () =>
+    !isEditing || !isDirty || window.confirm('Discard unsaved changes to this proposal?')
+
+  const handleStartEditing = () => {
+    setDraftLineItems(savedLineItems)
+    setDraftDiscount(savedDiscount)
+    setIsEditing(true)
+  }
+  const handleCancelEditing = () => {
+    if (!confirmDiscardIfDirty()) return
+    setIsEditing(false)
+  }
+  const handleSaveEditing = () => {
+    updateBookingLineItems(booking.id, draftLineItems, draftDiscount)
+    appendDocumentHistory(booking.id, 'Line items updated')
+    setIsEditing(false)
+  }
+  const handleBack = () => {
+    if (!confirmDiscardIfDirty()) return
+    onBack()
+  }
+  const handleOpenBeo = () => {
+    if (!confirmDiscardIfDirty()) return
+    onOpenBeo()
+  }
   const handleLineItemsChange = (nextItems: LineItem[]) => {
-    updateBookingLineItems(booking.id, nextItems, discount)
+    setDraftLineItems(nextItems)
   }
   const handleDiscountChange = (nextDiscount: Discount) => {
-    updateBookingLineItems(booking.id, lineItems, nextDiscount)
-  }
-  const handleToggleEdit = () => {
-    if (isEditing) {
-      appendDocumentHistory(booking.id, 'Line items updated')
-    }
-    setIsEditing((current) => !current)
+    setDraftDiscount(nextDiscount)
   }
   const [showPdfPreview, setShowPdfPreview] = useState(false)
 
@@ -5859,7 +5934,7 @@ function DocumentsView({
 
   return (
     <div className="page-stack">
-      <button className="text-action back-action no-print" onClick={onBack} type="button">
+      <button className="text-action back-action no-print" onClick={handleBack} type="button">
         <ChevronLeft size={16} />
         Back to {documentType}
       </button>
@@ -5871,19 +5946,31 @@ function DocumentsView({
             <h2>{booking.eventName}</h2>
           </div>
           <div className="toolbar-actions">
-            <button className="secondary-action" onClick={onOpenBeo} type="button">
+            <button className="secondary-action" onClick={handleOpenBeo} type="button">
               <ClipboardList size={16} />
               Open BEO
             </button>
-            {canEdit && (
-              <button
-                className={isEditing ? 'secondary-action' : 'primary-action'}
-                onClick={handleToggleEdit}
-                type="button"
-              >
-                {isEditing ? 'Done editing' : 'Edit line items'}
-              </button>
-            )}
+            {canEdit &&
+              (isEditing ? (
+                <>
+                  <button className="secondary-action" onClick={handleCancelEditing} type="button">
+                    Cancel
+                  </button>
+                  <button
+                    className="primary-action"
+                    disabled={!isDirty}
+                    onClick={handleSaveEditing}
+                    type="button"
+                  >
+                    <CheckCircle2 size={16} />
+                    Save changes
+                  </button>
+                </>
+              ) : (
+                <button className="primary-action" onClick={handleStartEditing} type="button">
+                  Edit line items
+                </button>
+              ))}
             <button className="secondary-action" onClick={shareWithClient} type="button">
               <Send size={16} />
               Send to client
@@ -5984,8 +6071,16 @@ function ProductDetailView({
     new Set([...units, draft.unit].filter(Boolean)),
   ).sort((a, b) => a.localeCompare(b))
 
+  const hasOptions = (draft.priceTiers?.length ?? 0) > 0
+
   const setField = <K extends keyof Product>(field: K, value: Product[K]) => {
     setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  const setTierField = <K extends keyof PriceTier>(index: number, field: K, value: PriceTier[K]) => {
+    const next = [...(draft.priceTiers ?? [])]
+    next[index] = { ...next[index], [field]: value }
+    setField('priceTiers', next)
   }
 
   const handleBack = () => {
@@ -5996,7 +6091,11 @@ function ProductDetailView({
   const handleSave = () => {
     // Drop blank inclusion rows so the card never renders empty checklist items.
     const inclusions = (draft.inclusions ?? []).map((item) => item.trim()).filter(Boolean)
-    onSave({ ...draft, inclusions })
+    // Drop invalid option rows and blank labels; fall back to a flat price if none remain.
+    const priceTiers = (draft.priceTiers ?? [])
+      .filter((tier) => Number.isFinite(tier.price))
+      .map((tier) => ({ ...tier, label: tier.label?.trim() || undefined }))
+    onSave({ ...draft, inclusions, priceTiers: priceTiers.length ? priceTiers : undefined })
     onBack()
   }
 
@@ -6111,16 +6210,83 @@ function ProductDetailView({
               </button>
             </div>
           </div>
-          <FormField label="Price">
-            <input
-              min="0"
-              onChange={(event) =>
-                setField('price', event.target.value === '' ? null : Number(event.target.value))
-              }
-              type="number"
-              value={draft.price ?? ''}
-            />
+          <FormField label="Price options">
+            <select
+              onChange={(event) => {
+                if (event.target.value === 'Yes') {
+                  setField(
+                    'priceTiers',
+                    draft.priceTiers?.length ? draft.priceTiers : [{ price: draft.price ?? 0 }],
+                  )
+                } else {
+                  setField('priceTiers', undefined)
+                }
+              }}
+              value={hasOptions ? 'Yes' : 'No'}
+            >
+              <option value="No">No — single price</option>
+              <option value="Yes">Yes — let staff pick an option</option>
+            </select>
           </FormField>
+          {hasOptions ? (
+            <div className="form-field">
+              <span>Options</span>
+              <div className="tier-editor">
+                {(draft.priceTiers ?? []).map((tier, index) => (
+                  <div className="tier-editor-row" key={index}>
+                    <input
+                      aria-label={`Option ${index + 1} label`}
+                      onChange={(event) => setTierField(index, 'label', event.target.value)}
+                      placeholder="Label (optional)"
+                      value={tier.label ?? ''}
+                    />
+                    <input
+                      aria-label={`Option ${index + 1} price`}
+                      min="0"
+                      onChange={(event) => setTierField(index, 'price', Number(event.target.value))}
+                      placeholder="Price"
+                      type="number"
+                      value={tier.price}
+                    />
+                    <button
+                      aria-label={`Remove option ${index + 1}`}
+                      className="user-admin-remove"
+                      onClick={() =>
+                        setField(
+                          'priceTiers',
+                          (draft.priceTiers ?? []).filter((_, i) => i !== index),
+                        )
+                      }
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  className="secondary-action inclusion-add"
+                  onClick={() =>
+                    setField('priceTiers', [...(draft.priceTiers ?? []), { price: 0 }])
+                  }
+                  type="button"
+                >
+                  <Plus size={15} />
+                  Add option
+                </button>
+              </div>
+            </div>
+          ) : (
+            <FormField label="Price">
+              <input
+                min="0"
+                onChange={(event) =>
+                  setField('price', event.target.value === '' ? null : Number(event.target.value))
+                }
+                type="number"
+                value={draft.price ?? ''}
+              />
+            </FormField>
+          )}
           <FormField label="Unit">
             {addingUnit ? (
               <div className="category-add">
@@ -6307,6 +6473,9 @@ function ProductsView({
             <ChevronRight size={14} />
           </button>
         )}
+        {tiers.length > 0 && product.availability && product.availability !== 'Available' && (
+          <p className="resource-note">{product.availability}</p>
+        )}
         {tiers.length > 0 && (
           <div className="tier-select">
             <label>
@@ -6328,9 +6497,6 @@ function ProductsView({
               </select>
             </label>
           </div>
-        )}
-        {tiers.length > 0 && product.availability && product.availability !== 'Available' && (
-          <p className="resource-note">{product.availability}</p>
         )}
         {product.sourceUrl && (
           <a className="source-link" href={product.sourceUrl} rel="noreferrer" target="_blank">

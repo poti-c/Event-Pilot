@@ -2525,6 +2525,35 @@ span.status-badge {
   align-items: center;
 }
 
+.line-item-desc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.line-item-desc input {
+  flex: 1;
+  min-width: 0;
+}
+
+.line-item-desc select {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.line-item-desc select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
+}
+
 .line-items-header {
   color: var(--muted);
   font-size: 11px;
@@ -2859,8 +2888,18 @@ button.opportunity-card {
   flex-direction: column;
 }
 
+.package-section .resource-card .resource-note,
+.package-section .resource-card .tier-select,
 .package-section .resource-card .toggle-row {
   margin-top: auto;
+}
+
+/* Whichever of resource-note / tier-select comes first does the pinning; keep
+   the rest of the footer block snug below it instead of stacking auto gaps. */
+.package-section .resource-card .resource-note ~ .tier-select,
+.package-section .resource-card .resource-note ~ .toggle-row,
+.package-section .resource-card .tier-select ~ .toggle-row {
+  margin-top: 0;
 }
 
 /* Edit button and price sit in the same footer row, price on the far side. */
@@ -4119,6 +4158,29 @@ button.opportunity-card {
 
 .inclusion-add {
   justify-self: start;
+}
+
+.tier-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.tier-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tier-editor-row input {
+  min-width: 0;
+}
+
+.tier-editor-row input:first-child {
+  flex: 1;
+}
+
+.tier-editor-row input[type='number'] {
+  flex: 0 0 120px;
 }
 
 .integration-card {

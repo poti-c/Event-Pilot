@@ -14,6 +14,10 @@ export type LineItem = {
   description: string
   quantity: number
   unitPrice: number
+  // Links back to the catalog product this item was added from, when it has
+  // multiple price options, so the chosen option can be edited later.
+  productId?: string
+  tierIndex?: number
 }
 
 export type DiscountMode = 'none' | 'percent' | 'value' | 'promo'
