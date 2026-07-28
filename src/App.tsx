@@ -1505,6 +1505,18 @@ function App() {
     initialProducts,
     userId,
   )
+  // Editable Category and Unit option lists for packages/products (Settings >
+  // Package & Products edits them).
+  const [packageCategories, setPackageCategories] = useSyncedState<string[]>(
+    'eventpilot.package-categories.v1',
+    DEFAULT_PACKAGE_CATEGORIES,
+    userId,
+  )
+  const [unitOptions, setUnitOptions] = useSyncedState<string[]>(
+    'eventpilot.unit-options.v1',
+    DEFAULT_UNIT_OPTIONS,
+    userId,
+  )
   // Editable BEO department list, the BEO Viewer roster, and per-role permission
   // overrides all live in per-user synced state (Settings edits them).
   const [departments, setDepartments] = useSyncedState<BeoDepartment[]>(
@@ -2414,9 +2426,11 @@ function App() {
           {activeModule === 'Packages' && (
             <ProductsView
               account={loginSession}
+              categories={packageCategories}
               key={packagesNavNonce}
               products={products}
               setProducts={setProducts}
+              units={unitOptions}
             />
           )}
 
@@ -2441,12 +2455,16 @@ function App() {
               beoViewers={beoViewers}
               currentUserId={userId}
               departments={departments}
+              packageCategories={packageCategories}
               propertyProfile={propertyProfile}
               rolePermissionOverrides={rolePermissionOverrides}
               setBeoViewers={setBeoViewers}
               setDepartments={setDepartments}
+              setPackageCategories={setPackageCategories}
               setPropertyProfile={setPropertyProfile}
               setRolePermissionOverrides={setRolePermissionOverrides}
+              setUnitOptions={setUnitOptions}
+              unitOptions={unitOptions}
               updateAccountEmail={updateAccountEmail}
               updateAccountPassword={updateAccountPassword}
               updateProfileName={updateProfileName}
@@ -5922,6 +5940,16 @@ function emptyProduct(): Product {
 }
 
 const ADD_NEW_CATEGORY = '__add_new_category__'
+const ADD_NEW_UNIT = '__add_new_unit__'
+// Seed value for the Settings-editable Units list (Settings > Package & Products).
+const DEFAULT_UNIT_OPTIONS = [
+  'net',
+  'net per person',
+  'net per keg',
+  'net per bottle',
+  'net per event',
+  'net / 3 hours',
+]
 
 function ProductDetailView({
   canDelete,
@@ -5930,6 +5958,7 @@ function ProductDetailView({
   onDelete,
   onSave,
   product,
+  units,
 }: {
   canDelete: boolean
   categories: string[]
@@ -5937,16 +5966,22 @@ function ProductDetailView({
   onDelete: () => void
   onSave: (product: Product) => void
   product: Product
+  units: string[]
 }) {
   const [draft, setDraft] = useState<Product>(product)
   const [addingCategory, setAddingCategory] = useState(false)
   // Remembered so cancelling "Add new" without typing restores the prior choice.
   const [prevCategory, setPrevCategory] = useState(product.category)
+  const [addingUnit, setAddingUnit] = useState(false)
+  const [prevUnit, setPrevUnit] = useState(product.unit)
   const isDirty = JSON.stringify(draft) !== JSON.stringify(product)
 
   // Ensure the current value is always selectable even if it isn't in the list.
   const categoryChoices = Array.from(
     new Set([...categories, draft.category].filter(Boolean)),
+  ).sort((a, b) => a.localeCompare(b))
+  const unitChoices = Array.from(
+    new Set([...units, draft.unit].filter(Boolean)),
   ).sort((a, b) => a.localeCompare(b))
 
   const setField = <K extends keyof Product>(field: K, value: Product[K]) => {
@@ -6087,13 +6122,46 @@ function ProductDetailView({
             />
           </FormField>
           <FormField label="Unit">
-            <input onChange={(event) => setField('unit', event.target.value)} value={draft.unit} />
-          </FormField>
-          <FormField label="Availability">
-            <input
-              onChange={(event) => setField('availability', event.target.value)}
-              value={draft.availability}
-            />
+            {addingUnit ? (
+              <div className="category-add">
+                <input
+                  autoFocus
+                  onChange={(event) => setField('unit', event.target.value)}
+                  placeholder="New unit"
+                  value={draft.unit}
+                />
+                <button
+                  className="text-action"
+                  onClick={() => {
+                    if (!draft.unit.trim()) setField('unit', prevUnit)
+                    setAddingUnit(false)
+                  }}
+                  type="button"
+                >
+                  Choose from list
+                </button>
+              </div>
+            ) : (
+              <select
+                onChange={(event) => {
+                  if (event.target.value === ADD_NEW_UNIT) {
+                    setPrevUnit(draft.unit)
+                    setField('unit', '')
+                    setAddingUnit(true)
+                  } else {
+                    setField('unit', event.target.value)
+                  }
+                }}
+                value={draft.unit}
+              >
+                {unitChoices.map((unit) => (
+                  <option key={unit} value={unit}>
+                    {unit}
+                  </option>
+                ))}
+                <option value={ADD_NEW_UNIT}>＋ Add new unit…</option>
+              </select>
+            )}
           </FormField>
           <FormField label="Display price to client">
             <select
@@ -6137,14 +6205,21 @@ const PACKAGE_SECTIONS: { title: string; categories: string[] }[] = [
   { title: 'Additional Services', categories: ['Add-on service'] },
 ]
 
+// Seed value for the Settings-editable Category list (Settings > Package & Products).
+const DEFAULT_PACKAGE_CATEGORIES = PACKAGE_SECTIONS.flatMap((section) => section.categories)
+
 function ProductsView({
   account,
+  categories,
   products,
   setProducts,
+  units,
 }: {
   account: LoginSession
+  categories: string[]
   products: Product[]
   setProducts: (next: Product[] | ((current: Product[]) => Product[])) => void
+  units: string[]
 }) {
   const [viewingProductId, setViewingProductId] = useState<string | null>(null)
   // Read-only "See more" details popup (separate from the Edit view).
@@ -6170,15 +6245,10 @@ function ProductsView({
   const viewingProduct = products.find((product) => product.id === viewingProductId)
   const previewProduct = products.find((product) => product.id === previewProductId)
 
-  // Categories offered in the detail view's dropdown: the standard groupings
+  // Categories offered in the detail view's dropdown: the Settings-managed list
   // plus any category already in use across products.
   const categoryOptions = Array.from(
-    new Set(
-      [
-        ...PACKAGE_SECTIONS.flatMap((section) => section.categories),
-        ...products.map((product) => product.category),
-      ].filter(Boolean),
-    ),
+    new Set([...categories, ...products.map((product) => product.category)].filter(Boolean)),
   ).sort((a, b) => a.localeCompare(b))
 
   if (viewingProduct) {
@@ -6194,6 +6264,7 @@ function ProductsView({
           )
         }
         product={viewingProduct}
+        units={units}
       />
     )
   }
@@ -6236,7 +6307,7 @@ function ProductsView({
             <ChevronRight size={14} />
           </button>
         )}
-        {tiers.length > 0 ? (
+        {tiers.length > 0 && (
           <div className="tier-select">
             <label>
               <span>Choose option</span>
@@ -6256,16 +6327,6 @@ function ProductsView({
                 ))}
               </select>
             </label>
-            <div className="tier-price">
-              <strong>{money(tiers[selectedTier].price)}</strong>
-              <span>{product.unit}</span>
-            </div>
-          </div>
-        ) : (
-          <div className="resource-meta">
-            <span>{product.displayPrice ? priceLabel(product.price) : 'Quote required'}</span>
-            <span>{product.unit}</span>
-            <span>{product.availability}</span>
           </div>
         )}
         {tiers.length > 0 && product.availability && product.availability !== 'Available' && (
@@ -6281,8 +6342,18 @@ function ProductsView({
           <span>Show on BEO</span>
           <strong>{product.displayOnBeo ? 'Yes' : 'No'}</strong>
         </div>
-        {canEdit && (
-          <div className="card-actions">
+        <div className="card-actions">
+          <div className="price-block">
+            <strong>
+              {tiers.length > 0
+                ? money(tiers[selectedTier].price)
+                : product.displayPrice
+                  ? priceLabel(product.price)
+                  : 'Quote required'}
+            </strong>{' '}
+            <span>{product.unit}</span>
+          </div>
+          {canEdit && (
             <button
               className="primary-action"
               onClick={() => setViewingProductId(product.id)}
@@ -6290,15 +6361,8 @@ function ProductsView({
             >
               Edit
             </button>
-            <button
-              className="secondary-action"
-              onClick={() => deleteProduct(product.id)}
-              type="button"
-            >
-              Delete
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </article>
     )
   }
@@ -6352,7 +6416,6 @@ function ProductsView({
               {previewProduct.displayPrice ? priceLabel(previewProduct.price) : 'Quote required'}
             </span>
             <span>{previewProduct.unit}</span>
-            <span>{previewProduct.availability}</span>
           </div>
         </Modal>
       )}
@@ -8034,12 +8097,16 @@ function SettingsView({
   beoViewers,
   currentUserId,
   departments,
+  packageCategories,
   propertyProfile,
   rolePermissionOverrides,
   setBeoViewers,
   setDepartments,
+  setPackageCategories,
   setPropertyProfile,
   setRolePermissionOverrides,
+  setUnitOptions,
+  unitOptions,
   updateAccountEmail,
   updateAccountPassword,
   updateProfileName,
@@ -8048,18 +8115,22 @@ function SettingsView({
   beoViewers: BeoViewer[]
   currentUserId: string | null
   departments: BeoDepartment[]
+  packageCategories: string[]
   propertyProfile: PropertyProfile
   rolePermissionOverrides: RolePermissionOverrides
   setBeoViewers: (next: BeoViewer[] | ((current: BeoViewer[]) => BeoViewer[])) => void
   setDepartments: (
     next: BeoDepartment[] | ((current: BeoDepartment[]) => BeoDepartment[]),
   ) => void
+  setPackageCategories: (next: string[]) => void
   setPropertyProfile: (value: PropertyProfile) => void
   setRolePermissionOverrides: (
     next:
       | RolePermissionOverrides
       | ((current: RolePermissionOverrides) => RolePermissionOverrides),
   ) => void
+  setUnitOptions: (next: string[]) => void
+  unitOptions: string[]
   updateAccountEmail: (email: string) => Promise<string | null>
   updateAccountPassword: (password: string) => Promise<string | null>
   updateProfileName: (name: string) => Promise<string | null>
@@ -8068,6 +8139,7 @@ function SettingsView({
   const [draft, setDraft] = useState<PropertyProfile>(propertyProfile)
   const canEditProfile = hasPermission(account.role, 'admin:settings')
   const canManageUsers = hasPermission(account.role, 'admin:userManagement')
+  const canEditPackages = hasPermission(account.role, 'packages:edit')
 
   const startEditing = () => {
     setDraft(propertyProfile)
@@ -8274,6 +8346,15 @@ function SettingsView({
           beoViewers={beoViewers}
           departments={departments}
           setDepartments={setDepartments}
+        />
+      )}
+
+      {canEditPackages && (
+        <PackageSettingsPanel
+          categories={packageCategories}
+          setCategories={setPackageCategories}
+          setUnits={setUnitOptions}
+          units={unitOptions}
         />
       )}
 
@@ -9074,6 +9155,167 @@ function DepartmentsPanel({
         </button>
       </div>
       {notice && <p className="profile-notice">{notice}</p>}
+    </CollapsiblePanel>
+  )
+}
+
+/** A single editable list of short text values — add, rename, remove, then Save. */
+function StringListEditor({
+  addLabel,
+  items,
+  label,
+  minItemsMessage,
+  setItems,
+}: {
+  addLabel: string
+  items: string[]
+  label: string
+  minItemsMessage: string
+  setItems: (next: string[]) => void
+}) {
+  const [draft, setDraft] = useState<string[]>(items)
+  const [dirty, setDirty] = useState(false)
+  const [newItem, setNewItem] = useState('')
+  const [notice, setNotice] = useState('')
+
+  // Adjust the draft during render when the saved list changes (hydration / other
+  // edits), but never clobber unsaved work.
+  const [syncedFrom, setSyncedFrom] = useState(items)
+  if (!dirty && syncedFrom !== items) {
+    setSyncedFrom(items)
+    setDraft(items)
+  }
+
+  const addItem = () => {
+    const value = newItem.trim()
+    if (!value) return
+    if (draft.some((item) => item.toLowerCase() === value.toLowerCase())) {
+      setNotice('That value already exists.')
+      return
+    }
+    setDirty(true)
+    setNotice('')
+    setDraft([...draft, value])
+    setNewItem('')
+  }
+
+  const renameItem = (index: number, value: string) => {
+    setDirty(true)
+    setNotice('')
+    setDraft(draft.map((item, i) => (i === index ? value : item)))
+  }
+
+  const removeItem = (index: number) => {
+    setDirty(true)
+    setNotice('')
+    setDraft(draft.filter((_, i) => i !== index))
+  }
+
+  const save = () => {
+    const cleaned: string[] = []
+    for (const item of draft) {
+      const value = item.trim()
+      if (value && !cleaned.some((v) => v.toLowerCase() === value.toLowerCase())) {
+        cleaned.push(value)
+      }
+    }
+    if (cleaned.length === 0) {
+      setNotice(minItemsMessage)
+      return
+    }
+    setItems(cleaned)
+    setDirty(false)
+    setNotice(`${label} saved.`)
+  }
+
+  return (
+    <div className="list-editor-group">
+      <h3 className="support-subhead">{label}</h3>
+
+      <div className="department-editor-list">
+        {draft.map((item, index) => (
+          <div className="department-editor-row" key={index}>
+            <input
+              aria-label={`${label} ${index + 1}`}
+              onChange={(event) => renameItem(index, event.target.value)}
+              value={item}
+            />
+            <button
+              aria-label={`Remove ${item}`}
+              className="user-admin-remove"
+              onClick={() => removeItem(index)}
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="department-editor-add">
+        <input
+          aria-label={`New ${label.toLowerCase()}`}
+          onChange={(event) => setNewItem(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              addItem()
+            }
+          }}
+          placeholder={addLabel}
+          value={newItem}
+        />
+        <button className="secondary-action" onClick={addItem} type="button">
+          <Plus size={15} />
+          {addLabel}
+        </button>
+      </div>
+
+      <div className="status-actions">
+        <button className="primary-action" disabled={!dirty} onClick={save} type="button">
+          <ShieldCheck size={16} />
+          Save {label.toLowerCase()}
+        </button>
+      </div>
+      {notice && <p className="profile-notice">{notice}</p>}
+    </div>
+  )
+}
+
+/** Top-Management/manager editor for the package Category and Unit dropdown lists. */
+function PackageSettingsPanel({
+  categories,
+  setCategories,
+  setUnits,
+  units,
+}: {
+  categories: string[]
+  setCategories: (next: string[]) => void
+  setUnits: (next: string[]) => void
+  units: string[]
+}) {
+  return (
+    <CollapsiblePanel title="Package & Products">
+      <p className="panel-subtitle">
+        These Category and Units lists populate the dropdowns when editing a
+        package or product. Edit, add, or remove options, then Save.
+      </p>
+
+      <StringListEditor
+        addLabel="Add category"
+        items={categories}
+        label="Category"
+        minItemsMessage="Keep at least one category."
+        setItems={setCategories}
+      />
+
+      <StringListEditor
+        addLabel="Add unit"
+        items={units}
+        label="Units"
+        minItemsMessage="Keep at least one unit."
+        setItems={setUnits}
+      />
     </CollapsiblePanel>
   )
 }

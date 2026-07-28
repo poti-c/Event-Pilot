@@ -2852,17 +2852,38 @@ button.opportunity-card {
   text-decoration: underline;
 }
 
-/* Product cards flow content from the top but pin the price, the Show on BEO
-   row, and the Edit / Delete actions to the bottom, so those line up across a
-   row of cards. The auto margin sits on whichever price row the card uses. */
+/* Product cards flow content from the top but pin the Show on BEO row and the
+   Edit / price footer to the bottom, so those line up across a row of cards. */
 .package-section .resource-card {
   display: flex;
   flex-direction: column;
 }
 
-.package-section .resource-card .resource-meta,
-.package-section .resource-card .tier-select {
+.package-section .resource-card .toggle-row {
   margin-top: auto;
+}
+
+/* Edit button and price sit in the same footer row, price on the far side. */
+.package-section .resource-card .card-actions {
+  justify-content: space-between;
+}
+
+.price-block {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  line-height: 1.3;
+}
+
+.price-block strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.price-block span {
+  font-size: 14px;
+  color: var(--muted);
 }
 
 /* Grouped catalogue sections on the Packages & Products page. */
@@ -3711,6 +3732,13 @@ button.opportunity-card {
 
 .department-editor-warning {
   color: var(--danger, #b3261e);
+}
+
+/* Stacks multiple StringListEditor blocks (e.g. Category, Units) in one panel. */
+.list-editor-group + .list-editor-group {
+  margin-top: 22px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
 }
 
 /* --- Permissions matrix -------------------------------------------------- */
