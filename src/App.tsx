@@ -1446,19 +1446,31 @@ function App() {
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin'
   const [activeModule, setActiveModule] = useState<ModuleId>(getModuleFromHash)
   // A view with an unsaved draft (e.g. an in-progress proposal edit) registers a
-  // guard here. Any navigation away from it — sidebar clicks, "New booking",
-  // sign out — routes through guardedSetActiveModule so it can confirm first.
-  const unsavedChangesGuardRef = useRef<(() => boolean) | null>(null)
-  const registerUnsavedChangesGuard = useCallback((guard: (() => boolean) | null) => {
-    unsavedChangesGuardRef.current = guard
+  // guard here: whether it's currently dirty, and what to ask before discarding.
+  // Any navigation away from it routes through runGuarded so it can confirm
+  // first — via an in-app dialog, not window.confirm (unreliable in sandboxed
+  // preview frames: no visible prompt, and it silently resolves to "cancel").
+  const unsavedChangesGuardRef = useRef<{ isDirty: () => boolean; message: string } | null>(null)
+  const registerUnsavedChangesGuard = useCallback(
+    (guard: { isDirty: () => boolean; message: string } | null) => {
+      unsavedChangesGuardRef.current = guard
+    },
+    [],
+  )
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string
+    onConfirm: () => void
+  } | null>(null)
+  // Runs `action` right away if nothing would be lost; otherwise shows a
+  // confirm dialog first and only runs it if the user chooses to discard.
+  const runGuarded = useCallback((action: () => void) => {
+    const guard = unsavedChangesGuardRef.current
+    if (guard && guard.isDirty()) {
+      setConfirmDialog({ message: guard.message, onConfirm: action })
+      return
+    }
+    action()
   }, [])
-  // Returns true if navigation proceeded (nothing to lose, or the user
-  // confirmed discarding it) — callers should bail out on false.
-  const guardedSetActiveModule = (id: ModuleId): boolean => {
-    if (unsavedChangesGuardRef.current && !unsavedChangesGuardRef.current()) return false
-    setActiveModule(id)
-    return true
-  }
 
   const auth = useSupabaseAuth()
   // Offline sandbox session (used only when Supabase is not configured).
@@ -1959,9 +1971,11 @@ function App() {
   }
 
   const openNewBooking = () => {
-    if (!guardedSetActiveModule('NewBooking')) return
-    setBookingPrefill(null)
-    setConvertTarget('booking')
+    runGuarded(() => {
+      setBookingPrefill(null)
+      setConvertTarget('booking')
+      setActiveModule('NewBooking')
+    })
   }
 
   // Vendor console sign-in (see src/consoleClient.ts). Separate credentials,
@@ -2090,28 +2104,32 @@ function App() {
   // open) — a specific document is only opened via an explicit deep link
   // (e.g. "Open BEO" from a proposal), which sets the view-booking-id itself.
   const openModule = (id: ModuleId) => {
-    if (!guardedSetActiveModule(id)) return
-    if (id === 'BEOs') setBeoViewBookingId(null)
-    if (id === 'Proposals') setProposalViewBookingId(null)
-    if (id === 'Invoices') setInvoiceViewBookingId(null)
-    // Packages and Leads keep their open-item state inside their own view, so
-    // bump a nonce to remount — clicking the nav returns to the list instead of
-    // a stale detail.
-    if (id === 'Packages') setPackagesNavNonce((nonce) => nonce + 1)
-    if (id === 'Leads') setLeadsNavNonce((nonce) => nonce + 1)
+    runGuarded(() => {
+      setActiveModule(id)
+      if (id === 'BEOs') setBeoViewBookingId(null)
+      if (id === 'Proposals') setProposalViewBookingId(null)
+      if (id === 'Invoices') setInvoiceViewBookingId(null)
+      // Packages and Leads keep their open-item state inside their own view,
+      // so bump a nonce to remount — clicking the nav returns to the list
+      // instead of a stale detail.
+      if (id === 'Packages') setPackagesNavNonce((nonce) => nonce + 1)
+      if (id === 'Leads') setLeadsNavNonce((nonce) => nonce + 1)
+    })
   }
 
-  const handleLogout = async () => {
-    if (!guardedSetActiveModule('Login')) return
-    if (departmentSession) {
-      setDepartmentSession(null)
-    } else if (isSupabaseEnabled && supabase) {
-      await supabase.auth.signOut()
-    } else {
-      setLocalSession(initialLoginSession)
-    }
-    setQuery('')
-    setStatusFilter('All')
+  const handleLogout = () => {
+    runGuarded(async () => {
+      if (departmentSession) {
+        setDepartmentSession(null)
+      } else if (isSupabaseEnabled && supabase) {
+        await supabase.auth.signOut()
+      } else {
+        setLocalSession(initialLoginSession)
+      }
+      setQuery('')
+      setStatusFilter('All')
+      setActiveModule('Login')
+    })
   }
 
   // The vendor console is a separate authority plane: it never consults the
@@ -2187,7 +2205,7 @@ function App() {
           <p>{timeOfDayGreeting(new Date().getHours())}</p>
           <button
             className="sidebar-account"
-            onClick={() => guardedSetActiveModule('Settings')}
+            onClick={() => runGuarded(() => setActiveModule('Settings'))}
             title="Open settings"
             type="button"
           >
@@ -2301,7 +2319,7 @@ function App() {
               prefill={bookingPrefill}
               products={products}
               recordSandboxAction={recordSandboxAction}
-              setActiveModule={guardedSetActiveModule}
+              setActiveModule={(id) => runGuarded(() => setActiveModule(id))}
             />
           )}
 
@@ -2313,7 +2331,7 @@ function App() {
               leads={leads}
               overdueFollowUps={overdueFollowUps}
               pipelineRevenue={pipelineRevenue}
-              setActiveModule={guardedSetActiveModule}
+              setActiveModule={(id) => runGuarded(() => setActiveModule(id))}
               setSelectedBookingId={setSelectedBookingId}
             />
           )}
@@ -2393,12 +2411,15 @@ function App() {
                 catalog={products}
                 documentType="Proposals"
                 onBack={() => setProposalViewBookingId(null)}
-                onOpenBeo={() => {
-                  if (!guardedSetActiveModule('BEOs')) return
-                  setBeoViewBookingId(proposalViewBooking.id)
-                }}
+                onOpenBeo={() =>
+                  runGuarded(() => {
+                    setActiveModule('BEOs')
+                    setBeoViewBookingId(proposalViewBooking.id)
+                  })
+                }
                 propertyProfile={propertyProfile}
                 registerUnsavedChangesGuard={registerUnsavedChangesGuard}
+                runGuarded={runGuarded}
                 updateBookingLineItems={updateBookingLineItems}
               />
             ) : (
@@ -2421,12 +2442,15 @@ function App() {
                 catalog={products}
                 documentType="Invoices"
                 onBack={() => setInvoiceViewBookingId(null)}
-                onOpenBeo={() => {
-                  if (!guardedSetActiveModule('BEOs')) return
-                  setBeoViewBookingId(invoiceViewBooking.id)
-                }}
+                onOpenBeo={() =>
+                  runGuarded(() => {
+                    setActiveModule('BEOs')
+                    setBeoViewBookingId(invoiceViewBooking.id)
+                  })
+                }
                 propertyProfile={propertyProfile}
                 registerUnsavedChangesGuard={registerUnsavedChangesGuard}
+                runGuarded={runGuarded}
                 updateBookingLineItems={updateBookingLineItems}
               />
             ) : (
@@ -2490,6 +2514,35 @@ function App() {
         </main>
         {toast && <div className="toast no-print" role="status">{toast}</div>}
       </div>
+      {confirmDialog && (
+        <Modal
+          footer={
+            <>
+              <button
+                className="secondary-action"
+                onClick={() => setConfirmDialog(null)}
+                type="button"
+              >
+                Keep editing
+              </button>
+              <button
+                className="primary-action"
+                onClick={() => {
+                  confirmDialog.onConfirm()
+                  setConfirmDialog(null)
+                }}
+                type="button"
+              >
+                Discard changes
+              </button>
+            </>
+          }
+          onClose={() => setConfirmDialog(null)}
+          title="Unsaved changes"
+        >
+          <p>{confirmDialog.message}</p>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -5739,6 +5792,7 @@ function DocumentsView({
   onOpenBeo,
   propertyProfile,
   registerUnsavedChangesGuard,
+  runGuarded,
   updateBookingLineItems,
 }: {
   account: LoginSession
@@ -5749,7 +5803,8 @@ function DocumentsView({
   onBack: () => void
   onOpenBeo: () => void
   propertyProfile: PropertyProfile
-  registerUnsavedChangesGuard: (guard: (() => boolean) | null) => void
+  registerUnsavedChangesGuard: (guard: { isDirty: () => boolean; message: string } | null) => void
+  runGuarded: (action: () => void) => void
   updateBookingLineItems: (bookingId: string, lineItems: LineItem[], discount: Discount) => void
 }) {
   const [isEditing, setIsEditing] = useState(false)
@@ -5775,25 +5830,18 @@ function DocumentsView({
     first.timestamp.localeCompare(second.timestamp),
   )
 
-  // True if it's safe to navigate away right now — either nothing to lose, or
-  // the user confirmed discarding the unsaved draft.
-  const confirmDiscardIfDirty = useCallback(
-    () =>
-      !isEditing ||
-      !isDirty ||
-      window.confirm(
-        `Discard unsaved changes to this ${documentType === 'Proposals' ? 'proposal' : 'invoice'}?`,
-      ),
-    [documentType, isDirty, isEditing],
-  )
+  const unsavedChangesMessage = `Discard unsaved changes to this ${documentType === 'Proposals' ? 'proposal' : 'invoice'}?`
 
   // Any navigation away from this view — including clicks elsewhere in the app
-  // like the sidebar — routes through this guard so unsaved edits aren't lost
-  // silently. Re-registered whenever dirtiness changes; cleared on unmount.
+  // like the sidebar — routes through the shared runGuarded/confirm-dialog
+  // mechanism, using this as the dirtiness check. Cleared on unmount.
   useEffect(() => {
-    registerUnsavedChangesGuard(confirmDiscardIfDirty)
+    registerUnsavedChangesGuard({
+      isDirty: () => isEditing && isDirty,
+      message: unsavedChangesMessage,
+    })
     return () => registerUnsavedChangesGuard(null)
-  }, [confirmDiscardIfDirty, registerUnsavedChangesGuard])
+  }, [isEditing, isDirty, unsavedChangesMessage, registerUnsavedChangesGuard])
 
   const handleStartEditing = () => {
     setDraftLineItems(savedLineItems)
@@ -5801,8 +5849,7 @@ function DocumentsView({
     setIsEditing(true)
   }
   const handleCancelEditing = () => {
-    if (!confirmDiscardIfDirty()) return
-    setIsEditing(false)
+    runGuarded(() => setIsEditing(false))
   }
   const handleSaveEditing = () => {
     updateBookingLineItems(booking.id, draftLineItems, draftDiscount)
@@ -5810,8 +5857,7 @@ function DocumentsView({
     setIsEditing(false)
   }
   const handleBack = () => {
-    if (!confirmDiscardIfDirty()) return
-    onBack()
+    runGuarded(onBack)
   }
   const handleLineItemsChange = (nextItems: LineItem[]) => {
     setDraftLineItems(nextItems)
