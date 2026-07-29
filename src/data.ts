@@ -184,6 +184,10 @@ export type Venue = {
   serviceHours?: string
   sourceUrl?: string
   notes?: string
+  // Client-facing content for the Venue & Menu presentation view: a sales
+  // pitch description and photos (stored inline as data URLs, no file bucket).
+  description?: string
+  photos?: string[]
 }
 
 export type Task = {

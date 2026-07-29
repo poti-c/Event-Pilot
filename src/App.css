@@ -768,8 +768,7 @@
 }
 
 .date-tile strong,
-.forecast-card strong,
-.venue-stat strong {
+.forecast-card strong {
   color: var(--text-strong);
   font-size: 22px;
   line-height: 1;
@@ -3490,19 +3489,101 @@ button.opportunity-card {
   text-decoration: none;
 }
 
-.venue-stat {
-  display: flex;
-  align-items: end;
-  gap: 8px;
+.task-row {
+  grid-template-columns: 38px minmax(0, 1fr) 150px 160px 110px;
 }
 
-.venue-stat span {
+/* --- Venue & Menu ---------------------------------------------------------- */
+
+.venue-select-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.venue-select-card:hover {
+  border-color: var(--accent);
+}
+
+.venue-select-photo {
+  display: grid;
+  place-items: center;
+  height: 140px;
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.venue-select-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.venue-select-body {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+}
+
+.venue-select-body strong {
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.venue-select-body span:last-child {
   color: var(--muted);
   font-size: 13px;
 }
 
-.task-row {
-  grid-template-columns: 38px minmax(0, 1fr) 150px 160px 110px;
+.venue-photo-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.venue-photo {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-soft);
+}
+
+.venue-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.venue-photo-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.65);
+  color: white;
+  cursor: pointer;
+}
+
+.venue-photo-add {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .report-bars {

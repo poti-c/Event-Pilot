@@ -20,6 +20,7 @@ import {
   FileText,
   Filter,
   HelpCircle,
+  Image as ImageIcon,
   LayoutDashboard,
   LayoutGrid,
   LifeBuoy,
@@ -41,6 +42,7 @@ import {
   TriangleAlert,
   Users,
   Utensils,
+  X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -71,7 +73,7 @@ import {
   products as initialProducts,
   rolePermissions,
   tasks,
-  venues,
+  venues as initialVenues,
 } from './data'
 import type {
   Account,
@@ -88,6 +90,7 @@ import type {
   PriceTier,
   Product,
   PropertyProfile,
+  Venue,
 } from './data'
 
 type ModuleId =
@@ -123,7 +126,7 @@ const navItems: NavItem[] = [
   { id: 'BEOs', label: 'BEOs', icon: ClipboardList },
   { id: 'Invoices', label: 'Invoices', icon: ReceiptText },
   { id: 'Packages', label: 'Packages & Products', icon: Boxes },
-  { id: 'Venues', label: 'Venues', icon: MapPinned },
+  { id: 'Venues', label: 'Venue & Menu', icon: MapPinned },
   { id: 'Tasks', label: 'Tasks', icon: CheckSquare },
   { id: 'Reports', label: 'Reports', icon: BarChart3 },
   { id: 'Settings', label: 'Settings', icon: Settings },
@@ -1159,6 +1162,7 @@ type Action =
   | 'booking:advanceStatus'
   | 'booking:fallBackStatus'
   | 'packages:edit'
+  | 'venues:edit'
   | 'leads:create'
   | 'leads:edit'
   | 'leads:delete'
@@ -1184,6 +1188,7 @@ const ACTION_CATALOG: { key: Action; label: string; group: string }[] = [
   { key: 'leads:delete', label: 'Delete leads', group: 'Leads' },
   { key: 'proposal:edit', label: 'Edit proposals & BEO instructions', group: 'Documents' },
   { key: 'packages:edit', label: 'Edit packages & products', group: 'Documents' },
+  { key: 'venues:edit', label: 'Edit venue photos & details', group: 'Documents' },
   { key: 'admin:settings', label: 'Edit property settings', group: 'Administration' },
   { key: 'admin:userManagement', label: 'Manage users', group: 'Administration' },
 ]
@@ -1544,6 +1549,8 @@ function App() {
     DEFAULT_UNIT_OPTIONS,
     userId,
   )
+  // Venue photos and descriptions edited from the Venue & Menu page.
+  const [venues, setVenues] = useSyncedState<Venue[]>('eventpilot.venues.v1', initialVenues, userId)
   // Editable BEO department list, the BEO Viewer roster, and per-role permission
   // overrides all live in per-user synced state (Settings edits them).
   const [departments, setDepartments] = useSyncedState<BeoDepartment[]>(
@@ -2475,7 +2482,14 @@ function App() {
             />
           )}
 
-          {activeModule === 'Venues' && <VenuesView bookings={bookings} />}
+          {activeModule === 'Venues' && (
+            <VenuesView
+              account={loginSession}
+              products={products}
+              setVenues={setVenues}
+              venues={venues}
+            />
+          )}
 
           {activeModule === 'Tasks' && <TasksView bookings={bookings} />}
 
@@ -3015,7 +3029,7 @@ function NewBookingView({
     setForm((current) => ({ ...current, [field]: value }))
   }
   const selectedAccount = accounts.find((account) => account.name === form.account)
-  const selectedVenue = venues.find((venue) => venue.name === form.venue)
+  const selectedVenue = initialVenues.find((venue) => venue.name === form.venue)
   // The Package / product field references the whole catalogue; picking a
   // fixed-price wedding package also seeds the forecast revenue.
   const packageOptions = products.map((product) => product.name)
@@ -3273,7 +3287,7 @@ function NewBookingView({
                   value={form.venue}
                 />
                 <datalist id="venue-options">
-                  {venues.map((venue) => (
+                  {initialVenues.map((venue) => (
                     <option key={venue.id} value={venue.name} />
                   ))}
                 </datalist>
@@ -6652,10 +6666,10 @@ function ProductsView({
               </ul>
             </>
           )}
-          <div className="resource-meta">
-            <span>
+          <div className="price-block">
+            <strong>
               {previewProduct.displayPrice ? priceLabel(previewProduct.price) : 'Quote required'}
-            </span>
+            </strong>{' '}
             <span>{previewProduct.unit}</span>
           </div>
         </Modal>
@@ -6664,45 +6678,316 @@ function ProductsView({
   )
 }
 
-function VenuesView({ bookings }: { bookings: EventBooking[] }) {
-  return (
-    <section className="resource-grid">
-      {venues.map((venue) => {
-        const conflicts = bookings.filter(
-          (booking) => booking.venue === venue.name && booking.status !== 'Cancelled',
-        ).length
+/** Client-facing "Venue & Menu" hub: pick a venue to show its photos, details,
+ * and the full package/product menu with prices — built for sales staff to
+ * pull up on a screen while closing a deal, not for internal ops reporting. */
+function VenuesView({
+  account,
+  products,
+  setVenues,
+  venues,
+}: {
+  account: LoginSession
+  products: Product[]
+  setVenues: (next: Venue[] | ((current: Venue[]) => Venue[])) => void
+  venues: Venue[]
+}) {
+  const [viewingVenueId, setViewingVenueId] = useState<string | null>(null)
+  const canEdit = hasPermission(account.role, 'venues:edit')
+  const viewingVenue = venues.find((venue) => venue.id === viewingVenueId)
 
-        return (
-          <article className="resource-card" key={venue.id}>
-            <div className="resource-head">
-              <span>{venue.status}</span>
-              <strong>{venue.name}</strong>
+  if (viewingVenue) {
+    return (
+      <VenueDetailView
+        canEdit={canEdit}
+        onBack={() => setViewingVenueId(null)}
+        onSave={(updated) =>
+          setVenues((current) =>
+            current.map((venue) => (venue.id === updated.id ? updated : venue)),
+          )
+        }
+        products={products}
+        venue={viewingVenue}
+      />
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader
+          detail="Pick a venue to show its photos, details, and the full menu — ready to present to a client."
+          title="Venue & Menu"
+        />
+        <div className="resource-grid">
+          {venues.map((venue) => (
+            <button
+              className="venue-select-card"
+              key={venue.id}
+              onClick={() => setViewingVenueId(venue.id)}
+              type="button"
+            >
+              <div className="venue-select-photo">
+                {venue.photos?.[0] ? (
+                  <img alt="" src={venue.photos[0]} />
+                ) : (
+                  <ImageIcon size={22} />
+                )}
+              </div>
+              <div className="venue-select-body">
+                <span className="eyebrow">{venue.status}</span>
+                <strong>{venue.name}</strong>
+                <span>{capacityLabel(venue.capacity)} guest capacity</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function VenueDetailView({
+  canEdit,
+  onBack,
+  onSave,
+  products,
+  venue,
+}: {
+  canEdit: boolean
+  onBack: () => void
+  onSave: (venue: Venue) => void
+  products: Product[]
+  venue: Venue
+}) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState<Venue>(venue)
+  const [photoNotice, setPhotoNotice] = useState('')
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(venue)
+  const display = isEditing ? draft : venue
+
+  const setField = <K extends keyof Venue>(field: K, value: Venue[K]) => {
+    setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleStartEditing = () => {
+    setDraft(venue)
+    setPhotoNotice('')
+    setIsEditing(true)
+  }
+  const handleCancel = () => {
+    if (isDirty && !window.confirm('Discard unsaved changes to this venue?')) return
+    setDraft(venue)
+    setIsEditing(false)
+  }
+  const handleSave = () => {
+    onSave(draft)
+    setIsEditing(false)
+  }
+  const handleBack = () => {
+    if (isEditing && isDirty && !window.confirm('Discard unsaved changes to this venue?')) return
+    onBack()
+  }
+
+  // Photos are stored inline as data URLs, matching the letterhead logo
+  // uploader — no file storage bucket needed for a first version of this.
+  const addPhotos = (files: FileList | null) => {
+    if (!files || !files.length) return
+    setPhotoNotice('')
+    Array.from(files).forEach((file) => {
+      if (file.size > 1024 * 1024) {
+        setPhotoNotice(`${file.name} is over 1 MB — choose a smaller photo.`)
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? '')
+        if (!dataUrl) return
+        setDraft((current) => ({ ...current, photos: [...(current.photos ?? []), dataUrl] }))
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+  const removePhoto = (index: number) => {
+    setField('photos', (draft.photos ?? []).filter((_, i) => i !== index))
+  }
+
+  const knownCategories = new Set(PACKAGE_SECTIONS.flatMap((section) => section.categories))
+  const menuSections = PACKAGE_SECTIONS.map((section) => ({
+    title: section.title,
+    items: products.filter((product) => section.categories.includes(product.category)),
+  })).filter((section) => section.items.length > 0)
+  const otherItems = products.filter((product) => !knownCategories.has(product.category))
+  if (otherItems.length) menuSections.push({ title: 'Other', items: otherItems })
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={handleBack} type="button">
+        <ChevronLeft size={16} />
+        Back to Venue & Menu
+      </button>
+
+      <section className="panel">
+        <div className="drawer-head">
+          <div>
+            <p className="eyebrow">{display.status}</p>
+            <h2>{display.name}</h2>
+          </div>
+          {canEdit &&
+            (isEditing ? (
+              <div className="card-actions">
+                <button className="secondary-action" onClick={handleCancel} type="button">
+                  Cancel
+                </button>
+                <button
+                  className="primary-action"
+                  disabled={!isDirty}
+                  onClick={handleSave}
+                  type="button"
+                >
+                  <CheckCircle2 size={16} />
+                  Save changes
+                </button>
+              </div>
+            ) : (
+              <button className="secondary-action" onClick={handleStartEditing} type="button">
+                Edit
+              </button>
+            ))}
+        </div>
+
+        <div className="venue-photo-gallery">
+          {(display.photos ?? []).map((photo, index) => (
+            <div className="venue-photo" key={index}>
+              <img alt={`${display.name} ${index + 1}`} src={photo} />
+              {isEditing && (
+                <button
+                  aria-label={`Remove photo ${index + 1}`}
+                  className="venue-photo-remove"
+                  onClick={() => removePhoto(index)}
+                  type="button"
+                >
+                  <X size={14} />
+                </button>
+              )}
             </div>
-            <div className="venue-stat">
-              <strong>{capacityLabel(venue.capacity)}</strong>
-              <span>guest capacity</span>
-            </div>
-            <div className="progress-track">
-              <span style={{ width: `${venue.utilization}%` }} />
-            </div>
-            <p>{venue.utilization}% utilization this month</p>
-            {venue.serviceHours && <p>Service hours: {venue.serviceHours}</p>}
-            {venue.notes && <p>{venue.notes}</p>}
-            <TagList items={venue.setupStyles} />
-            {venue.sourceUrl && (
-              <a className="source-link" href={venue.sourceUrl} rel="noreferrer" target="_blank">
-                <ExternalLink size={14} />
-                Source page
-              </a>
+          ))}
+          {!(display.photos ?? []).length && !isEditing && (
+            <p className="empty-state">No photos added yet.</p>
+          )}
+        </div>
+        {isEditing && (
+          <div className="venue-photo-add">
+            <input
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              onChange={(event) => addPhotos(event.target.files)}
+              type="file"
+            />
+            <p className="panel-subtitle">Photos under 1 MB each.</p>
+            {photoNotice && <p className="profile-notice">{photoNotice}</p>}
+          </div>
+        )}
+
+        <div className="plan-edit-form">
+          <FormField label="Description">
+            {isEditing ? (
+              <textarea
+                onChange={(event) => setField('description', event.target.value)}
+                placeholder="What makes this venue great for events — shown to clients."
+                value={draft.description ?? ''}
+              />
+            ) : (
+              <p>{display.description || 'No description yet.'}</p>
             )}
-            <div className="toggle-row">
-              <span>Active bookings</span>
-              <strong>{conflicts}</strong>
+          </FormField>
+          <FormField label="Capacity">
+            {isEditing ? (
+              <input
+                min="0"
+                onChange={(event) =>
+                  setField('capacity', event.target.value === '' ? null : Number(event.target.value))
+                }
+                type="number"
+                value={draft.capacity ?? ''}
+              />
+            ) : (
+              <p>{capacityLabel(display.capacity)} guests</p>
+            )}
+          </FormField>
+          <FormField hint="Comma-separated" label="Setup styles">
+            {isEditing ? (
+              <input
+                onChange={(event) =>
+                  setField(
+                    'setupStyles',
+                    event.target.value.split(',').map((item) => item.trim()).filter(Boolean),
+                  )
+                }
+                value={draft.setupStyles.join(', ')}
+              />
+            ) : (
+              <TagList items={display.setupStyles} />
+            )}
+          </FormField>
+          <FormField label="Service hours">
+            {isEditing ? (
+              <input
+                onChange={(event) => setField('serviceHours', event.target.value)}
+                value={draft.serviceHours ?? ''}
+              />
+            ) : (
+              <p>{display.serviceHours || 'Not set'}</p>
+            )}
+          </FormField>
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelHeader detail="The full package and product menu, with prices as configured." title="Menu" />
+        <div className="package-sections">
+          {menuSections.map((section) => (
+            <div className="package-section" key={section.title}>
+              <div className="package-section-head">
+                <h3>{section.title}</h3>
+                <span>{section.items.length}</span>
+              </div>
+              <div className="resource-grid">
+                {section.items.map((product) => (
+                  <article className="resource-card" key={product.id}>
+                    <div className="resource-head">
+                      <span>{product.category}</span>
+                      <strong>{product.name}</strong>
+                    </div>
+                    {product.description && <p>{product.description}</p>}
+                    {product.inclusions && product.inclusions.length > 0 && (
+                      <ul className="inclusion-list">
+                        {product.inclusions.map((item, index) => (
+                          <li key={index}>
+                            <Check size={14} />
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="price-block">
+                      <strong>
+                        {product.priceTiers?.length
+                          ? product.priceTiers.map((tier) => money(tier.price)).join(' / ')
+                          : product.displayPrice
+                            ? priceLabel(product.price)
+                            : 'Quote required'}
+                      </strong>{' '}
+                      <span>{product.unit}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
             </div>
-          </article>
-        )
-      })}
-    </section>
+          ))}
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -6817,7 +7102,7 @@ function ReportsView({
 
   const venueUtilization = useMemo(
     () =>
-      venues.map((venue) => ({
+      initialVenues.map((venue) => ({
         venue,
         activeBookings: bookings.filter(
           (booking) => booking.venue === venue.name && booking.status !== 'Cancelled',
