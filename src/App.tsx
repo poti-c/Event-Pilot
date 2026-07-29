@@ -1445,6 +1445,20 @@ const initialLoginSession: LoginSession = {
 function App() {
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin'
   const [activeModule, setActiveModule] = useState<ModuleId>(getModuleFromHash)
+  // A view with an unsaved draft (e.g. an in-progress proposal edit) registers a
+  // guard here. Any navigation away from it — sidebar clicks, "New booking",
+  // sign out — routes through guardedSetActiveModule so it can confirm first.
+  const unsavedChangesGuardRef = useRef<(() => boolean) | null>(null)
+  const registerUnsavedChangesGuard = useCallback((guard: (() => boolean) | null) => {
+    unsavedChangesGuardRef.current = guard
+  }, [])
+  // Returns true if navigation proceeded (nothing to lose, or the user
+  // confirmed discarding it) — callers should bail out on false.
+  const guardedSetActiveModule = (id: ModuleId): boolean => {
+    if (unsavedChangesGuardRef.current && !unsavedChangesGuardRef.current()) return false
+    setActiveModule(id)
+    return true
+  }
 
   const auth = useSupabaseAuth()
   // Offline sandbox session (used only when Supabase is not configured).
@@ -1945,9 +1959,9 @@ function App() {
   }
 
   const openNewBooking = () => {
+    if (!guardedSetActiveModule('NewBooking')) return
     setBookingPrefill(null)
     setConvertTarget('booking')
-    setActiveModule('NewBooking')
   }
 
   // Vendor console sign-in (see src/consoleClient.ts). Separate credentials,
@@ -2076,7 +2090,7 @@ function App() {
   // open) — a specific document is only opened via an explicit deep link
   // (e.g. "Open BEO" from a proposal), which sets the view-booking-id itself.
   const openModule = (id: ModuleId) => {
-    setActiveModule(id)
+    if (!guardedSetActiveModule(id)) return
     if (id === 'BEOs') setBeoViewBookingId(null)
     if (id === 'Proposals') setProposalViewBookingId(null)
     if (id === 'Invoices') setInvoiceViewBookingId(null)
@@ -2088,6 +2102,7 @@ function App() {
   }
 
   const handleLogout = async () => {
+    if (!guardedSetActiveModule('Login')) return
     if (departmentSession) {
       setDepartmentSession(null)
     } else if (isSupabaseEnabled && supabase) {
@@ -2097,7 +2112,6 @@ function App() {
     }
     setQuery('')
     setStatusFilter('All')
-    setActiveModule('Login')
   }
 
   // The vendor console is a separate authority plane: it never consults the
@@ -2173,7 +2187,7 @@ function App() {
           <p>{timeOfDayGreeting(new Date().getHours())}</p>
           <button
             className="sidebar-account"
-            onClick={() => setActiveModule('Settings')}
+            onClick={() => guardedSetActiveModule('Settings')}
             title="Open settings"
             type="button"
           >
@@ -2287,7 +2301,7 @@ function App() {
               prefill={bookingPrefill}
               products={products}
               recordSandboxAction={recordSandboxAction}
-              setActiveModule={setActiveModule}
+              setActiveModule={guardedSetActiveModule}
             />
           )}
 
@@ -2299,7 +2313,7 @@ function App() {
               leads={leads}
               overdueFollowUps={overdueFollowUps}
               pipelineRevenue={pipelineRevenue}
-              setActiveModule={setActiveModule}
+              setActiveModule={guardedSetActiveModule}
               setSelectedBookingId={setSelectedBookingId}
             />
           )}
@@ -2380,10 +2394,11 @@ function App() {
                 documentType="Proposals"
                 onBack={() => setProposalViewBookingId(null)}
                 onOpenBeo={() => {
-                  setActiveModule('BEOs')
+                  if (!guardedSetActiveModule('BEOs')) return
                   setBeoViewBookingId(proposalViewBooking.id)
                 }}
                 propertyProfile={propertyProfile}
+                registerUnsavedChangesGuard={registerUnsavedChangesGuard}
                 updateBookingLineItems={updateBookingLineItems}
               />
             ) : (
@@ -2407,10 +2422,11 @@ function App() {
                 documentType="Invoices"
                 onBack={() => setInvoiceViewBookingId(null)}
                 onOpenBeo={() => {
-                  setActiveModule('BEOs')
+                  if (!guardedSetActiveModule('BEOs')) return
                   setBeoViewBookingId(invoiceViewBooking.id)
                 }}
                 propertyProfile={propertyProfile}
+                registerUnsavedChangesGuard={registerUnsavedChangesGuard}
                 updateBookingLineItems={updateBookingLineItems}
               />
             ) : (
@@ -5722,6 +5738,7 @@ function DocumentsView({
   onBack,
   onOpenBeo,
   propertyProfile,
+  registerUnsavedChangesGuard,
   updateBookingLineItems,
 }: {
   account: LoginSession
@@ -5732,6 +5749,7 @@ function DocumentsView({
   onBack: () => void
   onOpenBeo: () => void
   propertyProfile: PropertyProfile
+  registerUnsavedChangesGuard: (guard: (() => boolean) | null) => void
   updateBookingLineItems: (bookingId: string, lineItems: LineItem[], discount: Discount) => void
 }) {
   const [isEditing, setIsEditing] = useState(false)
@@ -5759,8 +5777,23 @@ function DocumentsView({
 
   // True if it's safe to navigate away right now — either nothing to lose, or
   // the user confirmed discarding the unsaved draft.
-  const confirmDiscardIfDirty = () =>
-    !isEditing || !isDirty || window.confirm('Discard unsaved changes to this proposal?')
+  const confirmDiscardIfDirty = useCallback(
+    () =>
+      !isEditing ||
+      !isDirty ||
+      window.confirm(
+        `Discard unsaved changes to this ${documentType === 'Proposals' ? 'proposal' : 'invoice'}?`,
+      ),
+    [documentType, isDirty, isEditing],
+  )
+
+  // Any navigation away from this view — including clicks elsewhere in the app
+  // like the sidebar — routes through this guard so unsaved edits aren't lost
+  // silently. Re-registered whenever dirtiness changes; cleared on unmount.
+  useEffect(() => {
+    registerUnsavedChangesGuard(confirmDiscardIfDirty)
+    return () => registerUnsavedChangesGuard(null)
+  }, [confirmDiscardIfDirty, registerUnsavedChangesGuard])
 
   const handleStartEditing = () => {
     setDraftLineItems(savedLineItems)
@@ -5779,10 +5812,6 @@ function DocumentsView({
   const handleBack = () => {
     if (!confirmDiscardIfDirty()) return
     onBack()
-  }
-  const handleOpenBeo = () => {
-    if (!confirmDiscardIfDirty()) return
-    onOpenBeo()
   }
   const handleLineItemsChange = (nextItems: LineItem[]) => {
     setDraftLineItems(nextItems)
@@ -5946,7 +5975,7 @@ function DocumentsView({
             <h2>{booking.eventName}</h2>
           </div>
           <div className="toolbar-actions">
-            <button className="secondary-action" onClick={handleOpenBeo} type="button">
+            <button className="secondary-action" onClick={onOpenBeo} type="button">
               <ClipboardList size={16} />
               Open BEO
             </button>
