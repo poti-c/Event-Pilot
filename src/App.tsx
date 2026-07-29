@@ -2491,7 +2491,6 @@ function App() {
           {activeModule === 'Venues' && (
             <VenuesView
               account={loginSession}
-              products={products}
               setVenues={setVenues}
               setupStyles={setupStyleOptions}
               venues={venues}
@@ -6699,18 +6698,16 @@ function ProductsView({
   )
 }
 
-/** Client-facing "Venue & Menu" hub: pick a venue to show its photos, details,
- * and the full package/product menu with prices — built for sales staff to
- * pull up on a screen while closing a deal, not for internal ops reporting. */
+/** Client-facing venue hub: pick a venue to show its photos and details —
+ * built for sales staff to pull up on a screen while closing a deal, not for
+ * internal ops reporting. */
 function VenuesView({
   account,
-  products,
   setVenues,
   setupStyles,
   venues,
 }: {
   account: LoginSession
-  products: Product[]
   setVenues: (next: Venue[] | ((current: Venue[]) => Venue[])) => void
   setupStyles: string[]
   venues: Venue[]
@@ -6735,7 +6732,6 @@ function VenuesView({
             current.map((venue) => (venue.id === updated.id ? updated : venue)),
           )
         }
-        products={products}
         setupStyleOptions={setupStyleOptions}
         venue={viewingVenue}
       />
@@ -6746,7 +6742,7 @@ function VenuesView({
     <div className="page-stack">
       <section className="panel">
         <PanelHeader
-          detail="Pick a venue to show its photos, details, and the full menu — ready to present to a client."
+          detail="Pick a venue to show its photos and details — ready to present to a client."
           title="Venue & Menu"
         />
         <div className="resource-grid">
@@ -6781,14 +6777,12 @@ function VenueDetailView({
   canEdit,
   onBack,
   onSave,
-  products,
   setupStyleOptions,
   venue,
 }: {
   canEdit: boolean
   onBack: () => void
   onSave: (venue: Venue) => void
-  products: Product[]
   setupStyleOptions: string[]
   venue: Venue
 }) {
@@ -6843,14 +6837,6 @@ function VenueDetailView({
   const removePhoto = (index: number) => {
     setField('photos', (draft.photos ?? []).filter((_, i) => i !== index))
   }
-
-  const knownCategories = new Set(PACKAGE_SECTIONS.flatMap((section) => section.categories))
-  const menuSections = PACKAGE_SECTIONS.map((section) => ({
-    title: section.title,
-    items: products.filter((product) => section.categories.includes(product.category)),
-  })).filter((section) => section.items.length > 0)
-  const otherItems = products.filter((product) => !knownCategories.has(product.category))
-  if (otherItems.length) menuSections.push({ title: 'Other', items: otherItems })
 
   return (
     <div className="page-stack">
@@ -6975,51 +6961,6 @@ function VenueDetailView({
               <p>{display.serviceHours || 'Not set'}</p>
             )}
           </FormField>
-        </div>
-      </section>
-
-      <section className="panel">
-        <PanelHeader detail="The full package and product menu, with prices as configured." title="Menu" />
-        <div className="package-sections">
-          {menuSections.map((section) => (
-            <div className="package-section" key={section.title}>
-              <div className="package-section-head">
-                <h3>{section.title}</h3>
-                <span>{section.items.length}</span>
-              </div>
-              <div className="resource-grid">
-                {section.items.map((product) => (
-                  <article className="resource-card" key={product.id}>
-                    <div className="resource-head">
-                      <span>{product.category}</span>
-                      <strong>{product.name}</strong>
-                    </div>
-                    {product.description && <p>{product.description}</p>}
-                    {product.inclusions && product.inclusions.length > 0 && (
-                      <ul className="inclusion-list">
-                        {product.inclusions.map((item, index) => (
-                          <li key={index}>
-                            <Check size={14} />
-                            <span>{item}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="price-block">
-                      <strong>
-                        {product.priceTiers?.length
-                          ? product.priceTiers.map((tier) => money(tier.price)).join(' / ')
-                          : product.displayPrice
-                            ? priceLabel(product.price)
-                            : 'Quote required'}
-                      </strong>{' '}
-                      <span>{product.unit}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </div>
-          ))}
         </div>
       </section>
     </div>
