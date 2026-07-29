@@ -1549,6 +1549,12 @@ function App() {
     DEFAULT_UNIT_OPTIONS,
     userId,
   )
+  // Editable Setup style option list for venues (Settings > Venue & Menu).
+  const [setupStyleOptions, setSetupStyleOptions] = useSyncedState<string[]>(
+    'eventpilot.setup-styles.v1',
+    DEFAULT_SETUP_STYLES,
+    userId,
+  )
   // Venue photos and descriptions edited from the Venue & Menu page.
   const [venues, setVenues] = useSyncedState<Venue[]>('eventpilot.venues.v1', initialVenues, userId)
   // Editable BEO department list, the BEO Viewer roster, and per-role permission
@@ -2487,6 +2493,7 @@ function App() {
               account={loginSession}
               products={products}
               setVenues={setVenues}
+              setupStyles={setupStyleOptions}
               venues={venues}
             />
           )}
@@ -2518,7 +2525,9 @@ function App() {
               setPackageCategories={setPackageCategories}
               setPropertyProfile={setPropertyProfile}
               setRolePermissionOverrides={setRolePermissionOverrides}
+              setSetupStyleOptions={setSetupStyleOptions}
               setUnitOptions={setUnitOptions}
+              setupStyleOptions={setupStyleOptions}
               unitOptions={unitOptions}
               updateAccountEmail={updateAccountEmail}
               updateAccountPassword={updateAccountPassword}
@@ -3594,27 +3603,34 @@ function NewBookingView({
 }
 
 function FormField({
+  asGroup,
   children,
   hint,
   label,
   required,
   requiredLabel = 'Required',
 }: {
+  /**
+   * Render a div instead of a label. Use for composite controls (buttons, a
+   * pop-up menu) where a label would forward stray clicks to the first input.
+   */
+  asGroup?: boolean
   children: React.ReactNode
   hint?: string
   label: string
   required?: boolean
   requiredLabel?: string
 }) {
+  const Wrapper = asGroup ? 'div' : 'label'
   return (
-    <label className="form-field">
+    <Wrapper className="form-field">
       <span>
         {label}
         {required && <em>{requiredLabel}</em>}
       </span>
       {children}
       {hint && <small className="form-field-hint">{hint}</small>}
-    </label>
+    </Wrapper>
   )
 }
 
@@ -6127,6 +6143,11 @@ const DEFAULT_UNIT_OPTIONS = [
   'net / 3 hours',
 ]
 
+/** Setup styles seeded from the venues, edited in Settings > Venue & Menu. */
+const DEFAULT_SETUP_STYLES = Array.from(
+  new Set(initialVenues.flatMap((venue) => venue.setupStyles)),
+).sort((a, b) => a.localeCompare(b))
+
 function ProductDetailView({
   canDelete,
   categories,
@@ -6685,16 +6706,24 @@ function VenuesView({
   account,
   products,
   setVenues,
+  setupStyles,
   venues,
 }: {
   account: LoginSession
   products: Product[]
   setVenues: (next: Venue[] | ((current: Venue[]) => Venue[])) => void
+  setupStyles: string[]
   venues: Venue[]
 }) {
   const [viewingVenueId, setViewingVenueId] = useState<string | null>(null)
   const canEdit = hasPermission(account.role, 'venues:edit')
   const viewingVenue = venues.find((venue) => venue.id === viewingVenueId)
+
+  // Styles offered in the venue editor's dropdown: the Settings-managed list
+  // plus any style already in use across the venues.
+  const setupStyleOptions = Array.from(
+    new Set([...setupStyles, ...venues.flatMap((venue) => venue.setupStyles)].filter(Boolean)),
+  ).sort((a, b) => a.localeCompare(b))
 
   if (viewingVenue) {
     return (
@@ -6707,6 +6736,7 @@ function VenuesView({
           )
         }
         products={products}
+        setupStyleOptions={setupStyleOptions}
         venue={viewingVenue}
       />
     )
@@ -6752,12 +6782,14 @@ function VenueDetailView({
   onBack,
   onSave,
   products,
+  setupStyleOptions,
   venue,
 }: {
   canEdit: boolean
   onBack: () => void
   onSave: (venue: Venue) => void
   products: Product[]
+  setupStyleOptions: string[]
   venue: Venue
 }) {
   const [isEditing, setIsEditing] = useState(false)
@@ -6915,16 +6947,19 @@ function VenueDetailView({
               <p>{capacityLabel(display.capacity)} guests</p>
             )}
           </FormField>
-          <FormField hint="Comma-separated" label="Setup styles">
+          <FormField
+            asGroup={isEditing}
+            hint={isEditing ? 'Pick from the list, or add a new style' : undefined}
+            label="Setup styles"
+          >
             {isEditing ? (
-              <input
-                onChange={(event) =>
-                  setField(
-                    'setupStyles',
-                    event.target.value.split(',').map((item) => item.trim()).filter(Boolean),
-                  )
-                }
-                value={draft.setupStyles.join(', ')}
+              <TagSelectField
+                addLabel="Add setup style"
+                emptyLabel="No setup styles selected"
+                onChange={(next) => setField('setupStyles', next)}
+                options={setupStyleOptions}
+                placeholder="New setup style"
+                value={draft.setupStyles}
               />
             ) : (
               <TagList items={display.setupStyles} />
@@ -8631,7 +8666,9 @@ function SettingsView({
   setPackageCategories,
   setPropertyProfile,
   setRolePermissionOverrides,
+  setSetupStyleOptions,
   setUnitOptions,
+  setupStyleOptions,
   unitOptions,
   updateAccountEmail,
   updateAccountPassword,
@@ -8655,7 +8692,9 @@ function SettingsView({
       | RolePermissionOverrides
       | ((current: RolePermissionOverrides) => RolePermissionOverrides),
   ) => void
+  setSetupStyleOptions: (next: string[]) => void
   setUnitOptions: (next: string[]) => void
+  setupStyleOptions: string[]
   unitOptions: string[]
   updateAccountEmail: (email: string) => Promise<string | null>
   updateAccountPassword: (password: string) => Promise<string | null>
@@ -8666,6 +8705,7 @@ function SettingsView({
   const canEditProfile = hasPermission(account.role, 'admin:settings')
   const canManageUsers = hasPermission(account.role, 'admin:userManagement')
   const canEditPackages = hasPermission(account.role, 'packages:edit')
+  const canEditVenues = hasPermission(account.role, 'venues:edit')
 
   const startEditing = () => {
     setDraft(propertyProfile)
@@ -8882,6 +8922,10 @@ function SettingsView({
           setUnits={setUnitOptions}
           units={unitOptions}
         />
+      )}
+
+      {canEditVenues && (
+        <VenueSettingsPanel setSetupStyles={setSetupStyleOptions} setupStyles={setupStyleOptions} />
       )}
 
       {account.role === 'top_management' ? (
@@ -9846,6 +9890,32 @@ function PackageSettingsPanel({
   )
 }
 
+/** Editor for the venue Setup styles list offered on the Venue & Menu page. */
+function VenueSettingsPanel({
+  setSetupStyles,
+  setupStyles,
+}: {
+  setSetupStyles: (next: string[]) => void
+  setupStyles: string[]
+}) {
+  return (
+    <CollapsiblePanel title="Venue & Menu">
+      <p className="panel-subtitle">
+        This Setup styles list populates the dropdown when editing a venue. Edit,
+        add, or remove options, then Save.
+      </p>
+
+      <StringListEditor
+        addLabel="Add setup style"
+        items={setupStyles}
+        label="Setup styles"
+        minItemsMessage="Keep at least one setup style."
+        setItems={setSetupStyles}
+      />
+    </CollapsiblePanel>
+  )
+}
+
 /** Top-Management editor for per-role permissions (Top Management is always all). */
 function RolePermissionsPanel({
   overrides,
@@ -10424,6 +10494,154 @@ function PaperSection({
       <h3>{title}</h3>
       {children}
     </section>
+  )
+}
+
+/**
+ * Multi-select chip picker for a list-of-strings field. Offers the known
+ * options as a checklist and lets the user add one that is not on the list yet
+ * from the bottom of the menu.
+ */
+function TagSelectField({
+  addLabel = 'Add new',
+  emptyLabel = 'None selected',
+  onChange,
+  options,
+  placeholder = 'New option',
+  value,
+}: {
+  addLabel?: string
+  emptyLabel?: string
+  onChange: (next: string[]) => void
+  options: string[]
+  placeholder?: string
+  value: string[]
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [isAdding, setIsAdding] = useState(false)
+  const [newValue, setNewValue] = useState('')
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Known options plus anything already selected, so a value that is no longer
+  // offered elsewhere still shows up as ticked rather than silently vanishing.
+  const allOptions = Array.from(new Set([...options, ...value])).sort((a, b) =>
+    a.localeCompare(b),
+  )
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setIsOpen(false)
+        setIsAdding(false)
+        setNewValue('')
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [isOpen])
+
+  const toggleOption = (option: string) => {
+    onChange(
+      value.includes(option) ? value.filter((item) => item !== option) : [...value, option],
+    )
+  }
+
+  const commitNewOption = () => {
+    const trimmed = newValue.trim()
+    if (!trimmed) return
+    // Reuse an existing option when it only differs by case.
+    const existing = allOptions.find((option) => option.toLowerCase() === trimmed.toLowerCase())
+    const next = existing ?? trimmed
+    if (!value.includes(next)) onChange([...value, next])
+    setNewValue('')
+    setIsAdding(false)
+  }
+
+  return (
+    <div className="tag-select" ref={rootRef}>
+      <button
+        aria-expanded={isOpen}
+        className="tag-select-control"
+        onClick={() => setIsOpen((current) => !current)}
+        type="button"
+      >
+        {value.length ? (
+          <span className="tag-list">
+            {value.map((item) => (
+              <span className="tag" key={item}>
+                {item}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="tag-select-placeholder">{emptyLabel}</span>
+        )}
+        <ChevronDown size={16} />
+      </button>
+      {isOpen && (
+        <div className="tag-select-menu">
+          <div className="tag-select-options">
+            {allOptions.map((option) => {
+              const isSelected = value.includes(option)
+              return (
+                <button
+                  aria-pressed={isSelected}
+                  className={`tag-select-option${isSelected ? ' is-selected' : ''}`}
+                  key={option}
+                  onClick={() => toggleOption(option)}
+                  type="button"
+                >
+                  <span className="tag-select-check">{isSelected && <Check size={13} />}</span>
+                  <span>{option}</span>
+                </button>
+              )
+            })}
+            {!allOptions.length && <p className="tag-select-empty">No options yet.</p>}
+          </div>
+          <div className="tag-select-add">
+            {isAdding ? (
+              <>
+                <input
+                  autoFocus
+                  onChange={(event) => setNewValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      commitNewOption()
+                    }
+                    if (event.key === 'Escape') {
+                      event.preventDefault()
+                      setIsAdding(false)
+                      setNewValue('')
+                    }
+                  }}
+                  placeholder={placeholder}
+                  value={newValue}
+                />
+                <button
+                  className="secondary-action"
+                  disabled={!newValue.trim()}
+                  onClick={commitNewOption}
+                  type="button"
+                >
+                  Add
+                </button>
+              </>
+            ) : (
+              <button
+                className="tag-select-add-trigger"
+                onClick={() => setIsAdding(true)}
+                type="button"
+              >
+                <Plus size={14} />
+                <span>{addLabel}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
