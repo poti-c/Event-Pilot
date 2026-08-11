@@ -1654,7 +1654,12 @@ function App() {
   const [sandboxActions, setSandboxActions] = useState<SandboxAction[]>([])
 
   useEffect(() => {
-    const handleHashChange = () => setActiveModule(getModuleFromHash())
+    const handleHashChange = () => {
+      setActiveModule(getModuleFromHash())
+      // Arriving by URL or the back button is a fresh visit, so a lead opened
+      // by a previous topbar/CRM pull-in should not reopen with the list.
+      setPulledLeadId(null)
+    }
     window.addEventListener('hashchange', handleHashChange)
     return () => window.removeEventListener('hashchange', handleHashChange)
   }, [])
@@ -5029,7 +5034,7 @@ function LeadsView({
   // Rendered under the list, and hidden while a lead detail is open.
   listFooter?: ReactNode
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
-  // When set, the view only shows (and only creates) leads on that track.
+  // When set, the view only shows leads on that track.
   restrictToType?: LeadType
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
   title?: string
@@ -5038,7 +5043,6 @@ function LeadsView({
   const scopedLeads = restrictToType
     ? leads.filter((lead) => leadTypeOf(lead) === restrictToType)
     : leads
-  const canCreate = hasPermission(account.role, 'leads:create')
   const canEdit = hasPermission(account.role, 'leads:edit')
   const canConvert = hasPermission(account.role, 'booking:create')
   const canDelete = hasPermission(account.role, 'leads:delete')
@@ -5112,12 +5116,6 @@ function LeadsView({
     )
   }
 
-  const createLead = () => {
-    const lead = emptyLead(restrictToType ?? 'BEO')
-    setLeads((current) => [lead, ...current])
-    setSelectedLeadId(lead.id)
-  }
-
   const deleteLead = (id: string) => {
     if (!window.confirm('Delete this lead? This cannot be undone.')) return
     setLeads((current) => current.filter((lead) => lead.id !== id))
@@ -5146,15 +5144,10 @@ function LeadsView({
   return (
     <div className="page-stack">
       <section className="panel">
-        <PanelHeader
-          // The topbar's New lead covers the unrestricted list, so the action
-          // here would only duplicate it. On a track-restricted list it still
-          // earns its place: it creates a lead on *that* track, which the
-          // topbar (always BEO) cannot.
-          action={canCreate && restrictToType ? 'New lead' : undefined}
-          onAction={canCreate && restrictToType ? createLead : undefined}
-          title={title}
-        />
+        {/* Creating leads is the topbar's job now. A group-track lead starts
+            there too, then gets switched with the lead detail's Lead type
+            toggle. */}
+        <PanelHeader title={title} />
         <ListViewControls
           availableMonths={availableMonths}
           availableYears={availableYears}
