@@ -1647,6 +1647,10 @@ function App() {
   const [leadsNavNonce, setLeadsNavNonce] = useState(0)
   // The lead a CRM pull-in just created, so the Leads view opens onto it.
   const [pulledLeadId, setPulledLeadId] = useState<string | null>(null)
+  // Bumped by the topbar's New lead; the remounted Leads view opens a blank
+  // draft. Reset on any other navigation so it fires exactly once.
+  const [leadDraftNonce, setLeadDraftNonce] = useState(0)
+  const [openLeadDraft, setOpenLeadDraft] = useState(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -1659,6 +1663,7 @@ function App() {
       // Arriving by URL or the back button is a fresh visit, so a lead opened
       // by a previous topbar/CRM pull-in should not reopen with the list.
       setPulledLeadId(null)
+      setOpenLeadDraft(false)
     }
     window.addEventListener('hashchange', handleHashChange)
     return () => window.removeEventListener('hashchange', handleHashChange)
@@ -2271,6 +2276,7 @@ function App() {
     )
     setLeads((current) => [lead, ...current])
     setPulledLeadId(lead.id)
+    setOpenLeadDraft(false)
     setLeadsNavNonce((nonce) => nonce + 1)
     setActiveModule(leadType === 'Group Resume' ? 'GroupResume' : 'Leads')
     recordSandboxAction(
@@ -2328,12 +2334,15 @@ function App() {
    * The topbar's primary action. Work starts at a lead, so this is the front
    * door of the flow; creating a booking outright is the deliberate shortcut
    * and lives on the Bookings page instead.
+   *
+   * This only opens the form — the lead is not created until it is saved, so
+   * a change of mind leaves no empty "New lead" in the list.
    */
   const startNewLead = () => {
     runGuarded(() => {
-      const lead = emptyLead('BEO')
-      setLeads((current) => [lead, ...current])
-      setPulledLeadId(lead.id)
+      setPulledLeadId(null)
+      setOpenLeadDraft(true)
+      setLeadDraftNonce((nonce) => nonce + 1)
       setLeadsNavNonce((nonce) => nonce + 1)
       setActiveModule('Leads')
     })
@@ -2477,6 +2486,7 @@ function App() {
       if (id === 'Leads' || id === 'GroupResume') {
         setLeadsNavNonce((nonce) => nonce + 1)
         setPulledLeadId(null)
+        setOpenLeadDraft(false)
       }
     })
   }
@@ -2734,10 +2744,11 @@ function App() {
             <LeadsView
               account={loginSession}
               initialLeadId={pulledLeadId}
-              key={leadsNavNonce}
+              key={`${leadsNavNonce}-${leadDraftNonce}`}
               leads={leads}
               onConvert={convertLead}
               setLeads={setLeads}
+              startDraft={openLeadDraft}
             />
           )}
 
@@ -4631,24 +4642,33 @@ function LeadDetailView({
   canConvert,
   canDelete,
   canEdit,
+  isNew = false,
   lead,
   onBack,
   onConvert,
   onDelete,
+  onDiscardNew,
   onLogFollowUp,
+  onSaveNew,
   updateLead,
 }: {
   canConvert: boolean
   canDelete: boolean
   canEdit: boolean
+  // An unsaved draft: nothing exists in the lead list until Save is clicked,
+  // so abandoning the form leaves no empty "New lead" behind.
+  isNew?: boolean
   lead: Lead
   onBack: () => void
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
   onDelete: (id: string) => void
+  onDiscardNew?: () => void
   onLogFollowUp: (note: string) => void
+  onSaveNew?: () => void
   updateLead: <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => void
 }) {
-  const [isEditing, setIsEditing] = useState(false)
+  // A draft opens straight into the form — there is nothing to read yet.
+  const [isEditing, setIsEditing] = useState(isNew)
   const [followUp, setFollowUp] = useState('')
   // Status changes are staged locally so an accidental click never commits: the
   // draft only becomes real (and lands in history) when the user clicks Save.
@@ -4685,25 +4705,49 @@ function LeadDetailView({
       <button
         className="text-action back-action"
         onClick={() => {
+          if (isNew) {
+            onDiscardNew?.()
+            return
+          }
           resolvePendingStage()
           onBack()
         }}
         type="button"
       >
         <ChevronLeft size={16} />
-        Back to leads
+        {isNew ? 'Cancel' : 'Back to leads'}
       </button>
 
       <section className="panel">
         <div className="drawer-head">
           <div>
-            <p className={`eyebrow lead-stage-eyebrow ${stageClass(lead.stage)}`}>{lead.stage}</p>
+            <p className={`eyebrow lead-stage-eyebrow ${stageClass(lead.stage)}`}>
+              {isNew ? 'Unsaved draft' : lead.stage}
+            </p>
             <h2>
-              {lead.name}
-              {lead.company ? ` · ${lead.company}` : ''}
+              {isNew ? 'New lead' : lead.name}
+              {!isNew && lead.company ? ` · ${lead.company}` : ''}
             </h2>
           </div>
-          {(canEdit || canDelete) && (
+          {isNew ? (
+            <div className="drawer-head-actions">
+              <div className="card-actions">
+                <button className="secondary-action" onClick={onDiscardNew} type="button">
+                  Discard
+                </button>
+                <button
+                  className="primary-action"
+                  disabled={!lead.name.trim()}
+                  onClick={onSaveNew}
+                  type="button"
+                >
+                  <CheckCircle2 size={16} />
+                  Save lead
+                </button>
+              </div>
+            </div>
+          ) : (
+            (canEdit || canDelete) && (
             <div className="drawer-head-actions">
               {canEdit && !isEditing && (
                 <div className="lead-stage-control">
@@ -4778,6 +4822,7 @@ function LeadDetailView({
                 )}
               </div>
             </div>
+            )
           )}
         </div>
 
@@ -4937,7 +4982,7 @@ function LeadDetailView({
                 </div>
               </div>
             )}
-            {canEdit && (
+            {canEdit && !isNew && (
               <div className="drawer-section">
                 <h3>Log a follow-up</h3>
                 <div className="follow-up-form">
@@ -4960,7 +5005,7 @@ function LeadDetailView({
                 </div>
               </div>
             )}
-            {canConvert && (
+            {canConvert && !isNew && (
               <div className="lead-convert">
                 <div className="lead-convert-copy">
                   <strong>Convert this lead</strong>
@@ -4999,6 +5044,7 @@ function LeadDetailView({
         )}
       </section>
 
+      {!isNew && (
       <section className="panel">
         <PanelHeader title="History" />
         <div className="timeline">
@@ -5013,6 +5059,7 @@ function LeadDetailView({
           ))}
         </div>
       </section>
+      )}
     </div>
   )
 }
@@ -5025,6 +5072,7 @@ function LeadsView({
   onConvert,
   restrictToType,
   setLeads,
+  startDraft = false,
   title = 'Leads',
 }: {
   account: LoginSession
@@ -5037,9 +5085,15 @@ function LeadsView({
   // When set, the view only shows leads on that track.
   restrictToType?: LeadType
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
+  // Open on a blank unsaved draft — the topbar's New lead.
+  startDraft?: boolean
   title?: string
 }) {
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(initialLeadId ?? null)
+  // Held here, not in `leads`: an abandoned draft must leave nothing behind.
+  const [draftLead, setDraftLead] = useState<Lead | null>(() =>
+    startDraft ? emptyLead(restrictToType ?? 'BEO') : null,
+  )
   const scopedLeads = restrictToType
     ? leads.filter((lead) => leadTypeOf(lead) === restrictToType)
     : leads
@@ -5120,6 +5174,50 @@ function LeadsView({
     if (!window.confirm('Delete this lead? This cannot be undone.')) return
     setLeads((current) => current.filter((lead) => lead.id !== id))
     if (selectedLeadId === id) setSelectedLeadId(null)
+  }
+
+  const updateDraft = <K extends keyof Lead>(_id: string, field: K, value: Lead[K]) => {
+    setDraftLead((current) => (current ? { ...current, [field]: value } : current))
+  }
+
+  const saveDraft = () => {
+    if (!draftLead) return
+    const named = { ...draftLead, name: draftLead.name.trim() || 'Untitled lead' }
+    setLeads((current) => [named, ...current])
+    setDraftLead(null)
+    setSelectedLeadId(named.id)
+  }
+
+  const discardDraft = () => {
+    // Only nag when there is something to lose.
+    const untouched = JSON.stringify({ ...draftLead, id: '', createdAt: '', history: [] })
+    const blank = JSON.stringify({
+      ...emptyLead(draftLead?.leadType ?? restrictToType ?? 'BEO'),
+      id: '',
+      createdAt: '',
+      history: [],
+    })
+    if (untouched !== blank && !window.confirm('Discard this lead without saving?')) return
+    setDraftLead(null)
+  }
+
+  if (draftLead) {
+    return (
+      <LeadDetailView
+        canConvert={false}
+        canDelete={false}
+        canEdit
+        isNew
+        lead={draftLead}
+        onBack={discardDraft}
+        onConvert={onConvert}
+        onDelete={() => setDraftLead(null)}
+        onDiscardNew={discardDraft}
+        onLogFollowUp={() => {}}
+        onSaveNew={saveDraft}
+        updateLead={updateDraft}
+      />
+    )
   }
 
   const selectedLead = scopedLeads.find((lead) => lead.id === selectedLeadId)
