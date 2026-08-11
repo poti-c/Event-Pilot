@@ -2047,6 +2047,79 @@ span.status-badge {
   opacity: 0.4;
 }
 
+.lead-type-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+.lead-type-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lead-type-switch {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 3px;
+}
+
+.lead-type-switch button {
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.lead-type-switch button.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.lead-type-pill,
+.lead-type-tag {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+
+.opportunity-card .lead-type-tag {
+  justify-self: start;
+}
+
+.lead-type-tag.type-group {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--success) 32%, var(--border));
+}
+
+.lead-type-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .stage-pill {
   min-width: 116px;
   text-align: center;
@@ -2309,6 +2382,90 @@ span.status-badge {
 .dept-ack-note {
   color: var(--success);
   font-size: 12px;
+  font-weight: 700;
+}
+
+.department-instruction-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.department-instruction-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.department-instruction-actions .primary-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.department-message-log {
+  display: grid;
+  gap: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.department-message-log-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.department-message-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.department-message-timeline {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--border);
+}
+
+.department-message {
+  position: relative;
+  display: flex;
+  gap: 8px;
+}
+
+.department-message-dot {
+  position: absolute;
+  left: -18px;
+  top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.department-message.acknowledgement .department-message-dot {
+  background: var(--success);
+}
+
+.department-message p {
+  color: var(--text);
+  font-size: 12.5px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.department-message span {
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -3698,6 +3855,137 @@ button.opportunity-card {
   font-size: 13px;
 }
 
+/* Menu cards on the Venue & Menu page: smaller than the venue cards, four to a
+   row on a wide screen, dropping to three / two / one as it narrows. */
+.menu-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1200px) {
+  .menu-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .menu-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .menu-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.menu-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.menu-card:hover {
+  border-color: var(--accent);
+}
+
+.menu-card:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: 0;
+}
+
+.menu-detail-price {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.menu-detail-price strong {
+  color: var(--accent);
+  font-size: 18px;
+}
+
+.menu-detail-price span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.menu-detail-block {
+  display: grid;
+  gap: 9px;
+  margin-top: 18px;
+}
+
+.menu-detail-gallery {
+  margin: 14px 0 18px;
+}
+
+.menu-card-photo {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.menu-card-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.menu-card-body {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 11px 12px;
+}
+
+.menu-card-body strong {
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.menu-card-body p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.menu-card-price {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.menu-card-price strong {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.menu-card-price span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.menu-card .inclusion-list {
+  gap: 3px;
+  font-size: 12px;
+}
+
 .venue-photo-gallery {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -4863,4 +5151,512 @@ button.opportunity-card {
     border: none;
     box-shadow: none;
   }
+}
+
+/* ---------------------------------------------------------------- *
+ * Group resume document
+ * ---------------------------------------------------------------- */
+
+.gr-memo {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.gr-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.gr-row dt {
+  color: var(--text-strong);
+  font-weight: 750;
+  font-size: 14px;
+}
+
+.gr-row dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.gr-value {
+  display: grid;
+  gap: 2px;
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.gr-value em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.gr-input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 14px;
+}
+
+.gr-input:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  border-color: var(--accent);
+}
+
+.gr-input-narrow {
+  max-width: 110px;
+}
+
+.gr-paragraph {
+  margin: 12px 0;
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.gr-paragraph .gr-value {
+  white-space: pre-line;
+}
+
+.gr-days {
+  display: grid;
+  gap: 18px;
+}
+
+.gr-day {
+  display: grid;
+  gap: 10px;
+  break-inside: avoid;
+}
+
+.gr-day-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.gr-day-location {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.gr-rundown {
+  display: grid;
+  gap: 6px;
+}
+
+.gr-rundown-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 8px 12px;
+  font-size: 14px;
+}
+
+.gr-rundown-row span {
+  color: var(--text-strong);
+  font-weight: 750;
+}
+
+.gr-rundown-row p {
+  margin: 0;
+  white-space: pre-line;
+}
+
+.gr-rundown-row .gr-note {
+  color: var(--info);
+  font-style: italic;
+}
+
+.gr-rundown-edit {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.gr-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.gr-overnight {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 700;
+}
+
+.gr-table-scroll {
+  overflow-x: auto;
+}
+
+.gr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.gr-table th {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text-strong);
+  text-align: left;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.gr-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-strong);
+  vertical-align: top;
+}
+
+.gr-empty-cell {
+  color: var(--muted);
+  text-align: center;
+}
+
+.gr-revenue-table td:not(:first-child),
+.gr-revenue-table th:not(:first-child) {
+  text-align: right;
+}
+
+.gr-revenue-heading td {
+  background: var(--surface-soft);
+  font-weight: 800;
+}
+
+.gr-revenue-total td {
+  border-top: 2px solid var(--ink);
+  border-bottom: none;
+  font-weight: 800;
+  text-align: right;
+}
+
+.gr-total-cell {
+  white-space: nowrap;
+}
+
+.gr-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.gr-functions {
+  display: grid;
+  gap: 14px;
+}
+
+.gr-function {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  break-inside: avoid;
+}
+
+.gr-function > strong {
+  color: var(--text-strong);
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gr-function p {
+  margin: 0;
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .gr-row,
+  .gr-rundown-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .gr-rundown-edit {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.gr-updated-flag {
+  margin: 0 0 6px;
+  color: var(--info);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+/* ---------------------------------------------------------------- *
+ * Agreements & document revisions
+ * ---------------------------------------------------------------- */
+
+.revision-note-field {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--info-border);
+  border-radius: 8px;
+  background: var(--info-bg);
+}
+
+.revision-note-field label {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.revision-note-field input {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 14px;
+}
+
+.ag-value {
+  display: inline-block;
+  color: var(--text-strong);
+  font-size: 14px;
+  white-space: pre-line;
+}
+
+.ag-value em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.ag-parties {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.ag-party {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  break-inside: avoid;
+}
+
+.ag-party .gr-row {
+  grid-template-columns: 90px minmax(0, 1fr);
+}
+
+.ag-clauses {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.ag-clauses li {
+  break-inside: avoid;
+}
+
+.ag-clauses li > strong {
+  display: block;
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.ag-clauses li > p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ag-clause-edit {
+  display: grid;
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .ag-parties {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------- *
+ * Signed agreement upload & job closeout
+ * ---------------------------------------------------------------- */
+
+.gate-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.gate-banner > div {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gate-banner strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.gate-banner span {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.file-action {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.file-action input[type='file'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.signed-file-card,
+.signed-file-empty {
+  display: grid;
+  gap: 12px;
+}
+
+.signed-file-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--success-border);
+  border-radius: 8px;
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.signed-file-head > div {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.signed-file-head strong {
+  color: var(--text-strong);
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.signed-file-head span {
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* Scoped to .signed-file-head so it outranks that block's generic span rule. */
+.signed-file-head .signed-file-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--success);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.signed-file-preview {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.signed-file-preview img {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+}
+
+.signed-file-preview iframe {
+  display: block;
+  width: 100%;
+  height: 520px;
+  border: 0;
+}
+
+.closure-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.closure-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* ---------------------------------------------------------------- *
+ * CRM → Leads pull-in
+ * ---------------------------------------------------------------- */
+
+.crm-pull-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crm-pull-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.crm-pull-actions .panel-header-detail {
+  margin: 0;
+  color: var(--warning);
+}
+
+.notes-body {
+  white-space: pre-line;
 }

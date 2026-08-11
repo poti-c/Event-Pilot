@@ -20,6 +20,108 @@ export type LineItem = {
   tierIndex?: number
 }
 
+/* ------------------------------------------------------------------ *
+ * Document revisions
+ *
+ * Proposals and agreements are external documents: once one has gone to
+ * the client, an edit is not an overwrite but a new numbered revision.
+ * Each save stores a full snapshot so Revision 1 can still be read back
+ * exactly as the client saw it.
+ * ------------------------------------------------------------------ */
+
+/** Everything the printed proposal renders, frozen at save time. */
+export type ProposalSnapshot = {
+  eventName: string
+  account: string
+  contact: string
+  eventType: string
+  packageName: string
+  venue: string
+  room: string
+  date: string
+  expectedGuests: number
+  depositDue: number
+  lineItems: LineItem[]
+  discount: Discount
+}
+
+export type ProposalRevision = {
+  id: string
+  number: number
+  savedAt: string
+  savedBy: string
+  note: string
+  snapshot: ProposalSnapshot
+}
+
+/** One numbered term on the agreement (scope, payment, cancellation, ...). */
+export type AgreementClause = {
+  id: string
+  heading: string
+  body: string
+}
+
+/** The editable body of the agreement, snapshot per revision. */
+export type AgreementContent = {
+  agreementNumber: string
+  issueDate: string
+  /** Venue side — seeded from the property profile / issuer settings. */
+  providerName: string
+  providerAddress: string
+  providerSignatory: string
+  providerSignatoryTitle: string
+  /** Client side — seeded from the booking's billing entity. */
+  clientName: string
+  clientAddress: string
+  clientTaxId: string
+  clientSignatory: string
+  clientSignatoryTitle: string
+  eventSummary: string
+  clauses: AgreementClause[]
+  paymentSchedule: string[]
+  cancellationPolicy: string[]
+  lineItems: LineItem[]
+  discount: Discount
+}
+
+export type AgreementRevision = {
+  id: string
+  number: number
+  savedAt: string
+  savedBy: string
+  note: string
+  snapshot: AgreementContent
+}
+
+export type AgreementStatus = 'Draft' | 'Sent for signature' | 'Signed'
+
+/**
+ * The countersigned agreement coming back from the client. Held inline as a
+ * data URL, matching how venue and dish photos are stored — the prototype has
+ * no storage bucket. Its presence, not the status flag, is the real proof.
+ */
+export type SignedAgreementFile = {
+  name: string
+  type: string
+  size: number
+  dataUrl: string
+  uploadedAt: string
+  uploadedBy: string
+}
+
+export type Agreement = {
+  status: AgreementStatus
+  createdAt: string
+  /** Which proposal revision this agreement was generated from. */
+  fromProposalRevision: number
+  sentAt: string | null
+  signedAt: string | null
+  signedFile?: SignedAgreementFile | null
+  content: AgreementContent
+  revision: number
+  revisions: AgreementRevision[]
+}
+
 export type DiscountMode = 'none' | 'percent' | 'value' | 'promo'
 
 export type Discount = {
@@ -47,9 +149,21 @@ export const BEO_DEPARTMENTS: BeoDepartment[] = [
   'Kitchen',
   'Engineering',
   'Accounting',
+  'HR',
 ]
 
 export type DepartmentAck = {
+  by: string
+  at: string
+}
+
+// One recorded entry in a department's message timeline: either an instruction
+// that was submitted to the department, or that department's acknowledgement.
+export type DepartmentMessage = {
+  id: string
+  department: BeoDepartment
+  kind: 'instruction' | 'acknowledgement'
+  text: string
   by: string
   at: string
 }
@@ -96,12 +210,138 @@ export type EventBooking = {
   discount?: Discount
   beoHistory?: HistoryEntry[]
   documentHistory?: HistoryEntry[]
+  // Proposal revision counter and the readable snapshot of each save.
+  proposalRevision?: number
+  proposalRevisions?: ProposalRevision[]
+  // Generated from an agreed proposal; carries its own revision history.
+  agreement?: Agreement
   billingCompany?: string
+  // Legal billing entity for the tax invoice, kept separate from the
+  // "bill to" routing above (Master Account, third-party sponsor, ...).
+  billingCompanyName?: string
+  billingAddress?: string
+  billingTaxId?: string
   paymentMethod?: string
   clientApprovedAt?: string
   // Per-department BEO instructions and each department's acknowledgement.
   departmentInstructions?: Partial<Record<BeoDepartment, string>>
   departmentAcks?: Partial<Record<BeoDepartment, DepartmentAck>>
+  departmentMessages?: DepartmentMessage[]
+  // Which track this booking came from; drives BEOs vs Group Resume listing.
+  leadType?: LeadType
+  // Only populated on the Group Resume track, on first open of the document.
+  groupResume?: GroupResume
+  // Set once the job is closed out after the event; absence means still open.
+  closure?: JobClosure
+}
+
+/* ------------------------------------------------------------------ *
+ * Group resume
+ *
+ * The internal multi-day group document: a memo header, the group's own
+ * details, a day-by-day itinerary, the rooming list, the functions it
+ * contains, and the revenue summary with payment / billing instructions.
+ * Mirrors the resort's existing printed group resume layout.
+ * ------------------------------------------------------------------ */
+
+export type GroupResumeItineraryItem = {
+  id: string
+  /** Free text so "09:00hrs", "Morning", or an empty cell all work. */
+  time: string
+  detail: string
+  /** Rendered italic/blue on the printed sheet, for advisory notes. */
+  emphasis?: boolean
+}
+
+export type GroupResumeDay = {
+  id: string
+  label: string
+  date: string
+  location: string
+  items: GroupResumeItineraryItem[]
+  overnight: string
+}
+
+export type GroupResumeGuest = {
+  id: string
+  title: string
+  firstName: string
+  middleName: string
+  lastName: string
+  passportNumber: string
+  checkIn: string
+  checkOut: string
+  nights: number
+  note: string
+}
+
+export type GroupResumeFunction = {
+  id: string
+  name: string
+  date: string
+  venue: string
+  notes: string
+}
+
+/**
+ * One row of the revenue summary. `kind: 'heading'` renders a full-width
+ * band ("Function - 12 MAY 2025"); `kind: 'line'` is a costed row where any
+ * of room / night / pax may be blank.
+ */
+export type GroupResumeRevenueRow = {
+  id: string
+  kind: 'heading' | 'line'
+  details: string
+  rate: number | null
+  rooms: number | null
+  nights: number | null
+  pax: number | null
+  total: number
+}
+
+export type GroupResume = {
+  issueDate: string
+  updated: boolean
+  subject: string
+  from: string
+  to: string[]
+  cc: string[]
+  intro: string
+  groupName: string
+  organizer: string
+  leaderName: string
+  leaderPhone: string
+  leaderEmail: string
+  checkIn: string
+  checkOut: string
+  groupSize: string
+  roomCount: string
+  profile: string
+  days: GroupResumeDay[]
+  guests: GroupResumeGuest[]
+  roomRate: string
+  roomBenefits: string[]
+  functions: GroupResumeFunction[]
+  revenueRows: GroupResumeRevenueRow[]
+  paymentNotes: string[]
+  billingInstructions: string[]
+  closingNote: string
+  preparedBy: string
+  preparedByTitle: string
+  revision: number
+}
+
+/**
+ * Closing a job is the end of the operational flow: the event has happened,
+ * the final numbers are known, and nothing further is expected of it.
+ */
+export type JobClosure = {
+  closedAt: string
+  closedBy: string
+  actualGuests: number
+  finalRevenue: number
+  outstandingBalance: number
+  notes: string
 }
 
 export type Account = {
@@ -124,6 +364,12 @@ export type Account = {
 
 export type LeadStage = 'New' | 'Contacted' | 'Qualified' | 'Proposal Sent' | 'Won' | 'Lost'
 
+// A lead is worked as one of two document tracks: a single-function event that
+// ends in a BEO, or a multi-day group that ends in a group resume.
+export type LeadType = 'BEO' | 'Group Resume'
+
+export const LEAD_TYPES: LeadType[] = ['BEO', 'Group Resume']
+
 export type FollowUp = {
   id: string
   timestamp: string
@@ -140,6 +386,7 @@ export type Lead = {
   source: string
   category: string
   stage: LeadStage
+  leadType?: LeadType
   estimatedValue: number
   owner: string
   lostReason?: string
@@ -171,6 +418,9 @@ export type Product = {
   inclusions?: string[]
   priceTiers?: PriceTier[]
   sourceUrl?: string
+  // Client-facing dish photos for the Venue & Menu presentation view, stored
+  // inline as data URLs like the venue photos — no file bucket needed.
+  photos?: string[]
 }
 
 export type Venue = {

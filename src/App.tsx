@@ -15,8 +15,10 @@ import {
   CircleDollarSign,
   ClipboardList,
   Clock3,
+  Contact,
   Download,
   ExternalLink,
+  FileCheck2,
   FileText,
   Filter,
   HelpCircle,
@@ -39,7 +41,9 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
+  Trash2,
   TriangleAlert,
+  Upload,
   Users,
   Utensils,
   X,
@@ -68,6 +72,7 @@ import {
   accounts,
   BEO_DEPARTMENTS,
   initialBookings,
+  LEAD_TYPES,
   leads as initialLeads,
   naNirandProfile,
   products as initialProducts,
@@ -77,19 +82,37 @@ import {
 } from './data'
 import type {
   Account,
+  Agreement,
+  AgreementClause,
+  AgreementContent,
+  AgreementRevision,
+  AgreementStatus,
+  JobClosure,
   BookingStatus,
   Discount,
   BeoDepartment,
+  DepartmentAck,
+  DepartmentMessage,
   DiscountMode,
   EventBooking,
   FollowUp,
+  GroupResume,
+  GroupResumeDay,
+  GroupResumeFunction,
+  GroupResumeGuest,
+  GroupResumeItineraryItem,
+  GroupResumeRevenueRow,
   Lead,
   LeadStage,
+  LeadType,
   LineItem,
   PaymentStatus,
   PriceTier,
   Product,
   PropertyProfile,
+  ProposalRevision,
+  SignedAgreementFile,
+  ProposalSnapshot,
   Venue,
 } from './data'
 
@@ -100,7 +123,9 @@ type ModuleId =
   | 'CRM'
   | 'Bookings'
   | 'BEOs'
+  | 'GroupResume'
   | 'Proposals'
+  | 'Agreements'
   | 'Invoices'
   | 'Packages'
   | 'Venues'
@@ -122,11 +147,13 @@ const navItems: NavItem[] = [
   { id: 'CRM', label: 'CRM', icon: Users },
   { id: 'Leads', label: 'Leads', icon: Sparkles },
   { id: 'Proposals', label: 'Proposals', icon: FileText },
+  { id: 'Agreements', label: 'Agreements', icon: Scale },
   { id: 'Bookings', label: 'Bookings', icon: BookOpenCheck },
   { id: 'BEOs', label: 'BEOs', icon: ClipboardList },
+  { id: 'GroupResume', label: 'Group Resume', icon: Contact },
   { id: 'Invoices', label: 'Invoices', icon: ReceiptText },
   { id: 'Packages', label: 'Packages & Products', icon: Boxes },
-  { id: 'Venues', label: 'Venue & Menu', icon: MapPinned },
+  { id: 'Venues', label: 'Venue', icon: MapPinned },
   { id: 'Tasks', label: 'Tasks', icon: CheckSquare },
   { id: 'Reports', label: 'Reports', icon: BarChart3 },
   { id: 'Settings', label: 'Settings', icon: Settings },
@@ -136,6 +163,7 @@ const NAV_ACTION: Partial<Record<ModuleId, Action>> = {
   Leads: 'nav:Leads',
   CRM: 'nav:CRM',
   Proposals: 'nav:Proposals',
+  Agreements: 'nav:Agreements',
   Invoices: 'nav:Invoices',
   Packages: 'nav:Packages',
   Venues: 'nav:Venues',
@@ -173,6 +201,8 @@ function getModuleFromHash(): ModuleId {
 
 function moduleTitle(module: ModuleId) {
   if (module === 'Login') return 'Login'
+  if (module === 'GroupResume') return 'Group Resume'
+  if (module === 'Venues') return 'Venue'
   return module === 'NewBooking' ? 'New booking' : module
 }
 
@@ -657,6 +687,11 @@ function money(value: number) {
   }).format(value)
 }
 
+function fileSizeLabel(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
 function compactMoney(value: number) {
   if (value >= 1_000_000) return `THB ${(value / 1_000_000).toFixed(2)}M`
   // Values that round up to 1000K (>= 999,500) should read as millions, not "1000K".
@@ -763,6 +798,12 @@ function toDateKey(value: Date) {
   const month = `${value.getMonth() + 1}`.padStart(2, '0')
   const day = `${value.getDate()}`.padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function toStampKey(value: Date) {
+  const hours = `${value.getHours()}`.padStart(2, '0')
+  const minutes = `${value.getMinutes()}`.padStart(2, '0')
+  return `${toDateKey(value)} ${hours}:${minutes}`
 }
 
 function toMonthKey(value: Date) {
@@ -953,6 +994,7 @@ function bookingTimesOverlap(
 }
 
 type NewBookingFormState = {
+  leadType: LeadType
   eventName: string
   eventType: string
   account: string
@@ -986,7 +1028,11 @@ type NewBookingFormState = {
   staffing: string
   frontOffice: string
   vendors: string
+  hr: string
   billingCompany: string
+  billingCompanyName: string
+  billingAddress: string
+  billingTaxId: string
   paymentMethod: string
   specialRequests: string
   clientNotes: string
@@ -995,6 +1041,7 @@ type NewBookingFormState = {
 
 function getNewBookingDefaults(): NewBookingFormState {
   return {
+    leadType: 'BEO',
     eventName: '',
     eventType: '',
     account: '',
@@ -1028,7 +1075,11 @@ function getNewBookingDefaults(): NewBookingFormState {
     staffing: '',
     frontOffice: '',
     vendors: '',
+    hr: '',
     billingCompany: '',
+    billingCompanyName: '',
+    billingAddress: '',
+    billingTaxId: '',
     paymentMethod: '',
     specialRequests: '',
     clientNotes: '',
@@ -1044,6 +1095,7 @@ function bookingPrefillFromLead(lead: Lead): NewBookingFormState {
   const contactLine = [lead.email, lead.phone].filter(Boolean).join(' · ')
   return {
     ...defaults,
+    leadType: lead.leadType ?? 'BEO',
     eventName: lead.category ? `${accountName} — ${lead.category}` : `${accountName} event`,
     eventType: lead.category || defaults.eventType,
     account: accountName,
@@ -1154,6 +1206,7 @@ type Action =
   | 'nav:Leads'
   | 'nav:CRM'
   | 'nav:Proposals'
+  | 'nav:Agreements'
   | 'nav:Invoices'
   | 'nav:Packages'
   | 'nav:Venues'
@@ -1176,6 +1229,7 @@ const ACTION_CATALOG: { key: Action; label: string; group: string }[] = [
   { key: 'nav:CRM', label: 'See CRM', group: 'Navigation' },
   { key: 'nav:Leads', label: 'See Leads', group: 'Navigation' },
   { key: 'nav:Proposals', label: 'See Proposals', group: 'Navigation' },
+  { key: 'nav:Agreements', label: 'See Agreements', group: 'Navigation' },
   { key: 'nav:Invoices', label: 'See Invoices', group: 'Navigation' },
   { key: 'nav:Packages', label: 'See Packages & Products', group: 'Navigation' },
   { key: 'nav:Venues', label: 'See Venues', group: 'Navigation' },
@@ -1225,6 +1279,7 @@ const MANAGER_ONLY_ADDITIONS: Action[] = [
   'nav:Leads',
   'nav:CRM',
   'nav:Proposals',
+  'nav:Agreements',
   'nav:Invoices',
   'nav:Packages',
   'nav:Venues',
@@ -1549,13 +1604,13 @@ function App() {
     DEFAULT_UNIT_OPTIONS,
     userId,
   )
-  // Editable Setup style option list for venues (Settings > Venue & Menu).
+  // Editable Setup style option list for venues (Settings > Venue).
   const [setupStyleOptions, setSetupStyleOptions] = useSyncedState<string[]>(
     'eventpilot.setup-styles.v1',
     DEFAULT_SETUP_STYLES,
     userId,
   )
-  // Venue photos and descriptions edited from the Venue & Menu page.
+  // Venue photos and descriptions edited from the Venue page.
   const [venues, setVenues] = useSyncedState<Venue[]>('eventpilot.venues.v1', initialVenues, userId)
   // Editable BEO department list, the BEO Viewer roster, and per-role permission
   // overrides all live in per-user synced state (Settings edits them).
@@ -1583,12 +1638,15 @@ function App() {
   const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
   const [proposalViewBookingId, setProposalViewBookingId] = useState<string | null>(null)
   const [invoiceViewBookingId, setInvoiceViewBookingId] = useState<string | null>(null)
+  const [agreementViewBookingId, setAgreementViewBookingId] = useState<string | null>(null)
   // When a lead is converted, the New Booking form opens pre-filled; convertTarget
   // decides whether Save lands on Bookings or jumps straight to the proposal.
   const [bookingPrefill, setBookingPrefill] = useState<NewBookingFormState | null>(null)
   const [convertTarget, setConvertTarget] = useState<'booking' | 'proposal'>('booking')
   const [packagesNavNonce, setPackagesNavNonce] = useState(0)
   const [leadsNavNonce, setLeadsNavNonce] = useState(0)
+  // The lead a CRM pull-in just created, so the Leads view opens onto it.
+  const [pulledLeadId, setPulledLeadId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -1662,6 +1720,7 @@ function App() {
   const beoViewBooking = bookings.find((booking) => booking.id === beoViewBookingId)
   const proposalViewBooking = bookings.find((booking) => booking.id === proposalViewBookingId)
   const invoiceViewBooking = bookings.find((booking) => booking.id === invoiceViewBookingId)
+  const agreementViewBooking = bookings.find((booking) => booking.id === agreementViewBookingId)
 
   const filteredBookings = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -1820,27 +1879,44 @@ function App() {
     )
   }
 
-  const updateDepartmentInstruction = (
+  // Instructions are only stored once they are submitted, so a half-typed note
+  // never counts as a live instruction to the department.
+  const submitDepartmentInstruction = (
     bookingId: string,
     dept: BeoDepartment,
     text: string,
+    by: string,
   ) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
     setBookings((currentBookings) =>
       currentBookings.map((booking) =>
         booking.id === bookingId
           ? {
               ...booking,
-              departmentInstructions: { ...booking.departmentInstructions, [dept]: text },
-              // Editing an instruction clears that department's stale acknowledgement.
+              departmentInstructions: { ...booking.departmentInstructions, [dept]: trimmed },
+              // A new instruction clears that department's stale acknowledgement.
               departmentAcks: (() => {
                 const next = { ...booking.departmentAcks }
                 delete next[dept]
                 return next
               })(),
+              departmentMessages: [
+                ...(booking.departmentMessages ?? []),
+                {
+                  id: `DMSG-${Date.now()}`,
+                  department: dept,
+                  kind: 'instruction' as const,
+                  text: trimmed,
+                  by,
+                  at: toStampKey(new Date()),
+                },
+              ],
             }
           : booking,
       ),
     )
+    appendBeoHistory(bookingId, `Instructions sent to ${dept} (${by})`)
   }
 
   const acknowledgeDepartment = (bookingId: string, dept: BeoDepartment, by: string) => {
@@ -1853,6 +1929,17 @@ function App() {
                 ...booking.departmentAcks,
                 [dept]: { by, at: toDateKey(new Date()) },
               },
+              departmentMessages: [
+                ...(booking.departmentMessages ?? []),
+                {
+                  id: `DMSG-${Date.now()}`,
+                  department: dept,
+                  kind: 'acknowledgement' as const,
+                  text: 'Acknowledged the current instructions.',
+                  by,
+                  at: toStampKey(new Date()),
+                },
+              ],
             }
           : booking,
       ),
@@ -1922,6 +2009,227 @@ function App() {
     }
   }
 
+  /**
+   * Saving an edited proposal cuts a numbered revision: the booking keeps the
+   * live figures, and a full snapshot is appended so Revision 1 stays readable
+   * after Revision 2 is written.
+   */
+  const saveProposalRevision = (
+    bookingId: string,
+    lineItems: LineItem[],
+    discount: Discount,
+    savedBy: string,
+    note: string,
+  ) => {
+    let nextNumber = 0
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) => {
+        if (booking.id !== bookingId) return booking
+        const number = (booking.proposalRevision ?? 0) + 1
+        nextNumber = number
+        const snapshot: ProposalSnapshot = {
+          eventName: booking.eventName,
+          account: booking.account,
+          contact: booking.contact,
+          eventType: booking.eventType,
+          packageName: booking.packageName,
+          venue: booking.venue,
+          room: booking.room,
+          date: booking.date,
+          expectedGuests: booking.expectedGuests,
+          depositDue: booking.depositDue,
+          lineItems,
+          discount,
+        }
+        return {
+          ...booking,
+          lineItems,
+          discount,
+          proposalRevision: number,
+          proposalRevisions: [
+            ...(booking.proposalRevisions ?? []),
+            {
+              id: `PRV-${bookingId}-${number}`,
+              number,
+              savedAt: toStampKey(new Date()),
+              savedBy,
+              note,
+              snapshot,
+            },
+          ],
+        }
+      }),
+    )
+    appendDocumentHistory(bookingId, `Proposal saved as Revision ${nextNumber}`)
+  }
+
+  const createAgreement = (bookingId: string, agreement: Agreement) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId ? { ...booking, agreement } : booking,
+      ),
+    )
+    appendDocumentHistory(
+      bookingId,
+      `Agreement ${agreement.content.agreementNumber} generated from proposal Revision ${agreement.fromProposalRevision}`,
+    )
+  }
+
+  /** Same revision rule as the proposal, on the agreement's own counter. */
+  const saveAgreementRevision = (
+    bookingId: string,
+    content: AgreementContent,
+    savedBy: string,
+    note: string,
+  ) => {
+    let nextNumber = 0
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) => {
+        if (booking.id !== bookingId || !booking.agreement) return booking
+        const number = booking.agreement.revision + 1
+        nextNumber = number
+        return {
+          ...booking,
+          agreement: {
+            ...booking.agreement,
+            content,
+            revision: number,
+            revisions: [
+              ...booking.agreement.revisions,
+              {
+                id: `ARV-${bookingId}-${number}`,
+                number,
+                savedAt: toStampKey(new Date()),
+                savedBy,
+                note,
+                snapshot: content,
+              },
+            ],
+          },
+        }
+      }),
+    )
+    appendDocumentHistory(bookingId, `Agreement saved as Revision ${nextNumber}`)
+  }
+
+  /**
+   * The countersigned agreement coming back in. This — not the status flag —
+   * is what unlocks invoicing, so uploading one also marks the agreement and
+   * the booking's contract as signed.
+   */
+  const uploadSignedAgreement = (bookingId: string, file: SignedAgreementFile) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) => {
+        if (booking.id !== bookingId || !booking.agreement) return booking
+        return {
+          ...booking,
+          contractStatus: 'Signed',
+          agreement: {
+            ...booking.agreement,
+            status: 'Signed',
+            signedAt: toDateKey(new Date()),
+            signedFile: file,
+          },
+        }
+      }),
+    )
+    appendDocumentHistory(bookingId, `Signed agreement uploaded (${file.name})`)
+  }
+
+  const removeSignedAgreement = (bookingId: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) => {
+        if (booking.id !== bookingId || !booking.agreement) return booking
+        return {
+          ...booking,
+          agreement: {
+            ...booking.agreement,
+            status: 'Sent for signature',
+            signedAt: null,
+            signedFile: null,
+          },
+        }
+      }),
+    )
+    appendDocumentHistory(bookingId, 'Signed agreement removed')
+  }
+
+  /** Post-event closeout: final numbers in, nothing further expected. */
+  const closeJob = (bookingId: string, closure: JobClosure) => {
+    const stamped: JobClosure = {
+      ...closure,
+      closedBy: closure.closedBy || loginSession.displayName.trim() || 'Unknown user',
+    }
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId
+          ? {
+              ...booking,
+              status: 'Completed',
+              actualGuests: stamped.actualGuests,
+              revenue: stamped.finalRevenue,
+              closure: stamped,
+            }
+          : booking,
+      ),
+    )
+    const booking = bookings.find((item) => item.id === bookingId)
+    if (booking) {
+      recordSandboxAction(
+        'Job closed',
+        `${booking.eventName} closed out at ${money(stamped.finalRevenue)}.`,
+      )
+    }
+  }
+
+  const reopenJob = (bookingId: string) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) => {
+        if (booking.id !== bookingId) return booking
+        const next = { ...booking, status: 'Confirmed' as const }
+        delete next.closure
+        return next
+      }),
+    )
+  }
+
+  const setAgreementStatus = (bookingId: string, status: AgreementStatus) => {
+    const today = toDateKey(new Date())
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) => {
+        if (booking.id !== bookingId || !booking.agreement) return booking
+        return {
+          ...booking,
+          // A signed agreement is the contract; keep the booking's own
+          // contract status in step so the BEO readiness check agrees.
+          contractStatus: status === 'Signed' ? 'Signed' : booking.contractStatus,
+          agreement: {
+            ...booking.agreement,
+            status,
+            sentAt: status === 'Sent for signature' ? today : booking.agreement.sentAt,
+            signedAt: status === 'Signed' ? today : null,
+          },
+        }
+      }),
+    )
+    appendDocumentHistory(bookingId, `Agreement marked ${status}`)
+  }
+
+  const updateBookingGroupResume = (bookingId: string, groupResume: GroupResume) => {
+    setBookings((currentBookings) =>
+      currentBookings.map((booking) =>
+        booking.id === bookingId ? { ...booking, groupResume } : booking,
+      ),
+    )
+    const booking = bookings.find((item) => item.id === bookingId)
+    if (booking) {
+      recordSandboxAction(
+        'Group resume revision saved',
+        `${booking.eventName} group resume moved to Rev ${groupResume.revision}.`,
+      )
+    }
+  }
+
   const updateBookingLineItems = (
     bookingId: string,
     lineItems: LineItem[],
@@ -1943,6 +2251,26 @@ function App() {
     recordSandboxAction(
       'Booking created',
       `${booking.eventName} was added locally with ${booking.beoNumber}.`,
+    )
+  }
+
+  /**
+   * Step 2 of the sales flow: pull a CRM customer profile into a new lead and
+   * land straight on it, so the only thing left to type is what they want.
+   */
+  const pullAccountIntoLeads = (customer: Account, leadType: LeadType) => {
+    const lead = leadFromAccount(
+      customer,
+      leadType,
+      loginSession.displayName.trim() || 'Unassigned',
+    )
+    setLeads((current) => [lead, ...current])
+    setPulledLeadId(lead.id)
+    setLeadsNavNonce((nonce) => nonce + 1)
+    setActiveModule(leadType === 'Group Resume' ? 'GroupResume' : 'Leads')
+    recordSandboxAction(
+      'Lead created from CRM',
+      `${customer.name} pulled into the ${leadType} track.`,
     )
   }
 
@@ -2126,7 +2454,10 @@ function App() {
       // so bump a nonce to remount — clicking the nav returns to the list
       // instead of a stale detail.
       if (id === 'Packages') setPackagesNavNonce((nonce) => nonce + 1)
-      if (id === 'Leads') setLeadsNavNonce((nonce) => nonce + 1)
+      if (id === 'Leads' || id === 'GroupResume') {
+        setLeadsNavNonce((nonce) => nonce + 1)
+        setPulledLeadId(null)
+      }
     })
   }
 
@@ -2366,6 +2697,7 @@ function App() {
           {activeModule === 'Leads' && (
             <LeadsView
               account={loginSession}
+              initialLeadId={pulledLeadId}
               key={leadsNavNonce}
               leads={leads}
               onConvert={convertLead}
@@ -2373,16 +2705,43 @@ function App() {
             />
           )}
 
-          {activeModule === 'CRM' && <CrmView bookings={bookings} />}
+          {activeModule === 'GroupResume' && (
+            <GroupResumeView
+              account={loginSession}
+              bookings={bookings}
+              initialLeadId={pulledLeadId}
+              key={leadsNavNonce}
+              leads={leads}
+              onConvert={convertLead}
+              onOpenBooking={(bookingId) => {
+                setSelectedBookingId(bookingId)
+                setActiveModule('Bookings')
+              }}
+              onSaveResume={updateBookingGroupResume}
+              propertyProfile={propertyProfile}
+              setLeads={setLeads}
+            />
+          )}
+
+          {activeModule === 'CRM' && (
+            <CrmView
+              bookings={bookings}
+              canCreateLead={hasPermission(loginSession.role, 'leads:create')}
+              leads={leads}
+              onPullIntoLeads={pullAccountIntoLeads}
+            />
+          )}
 
           {activeModule === 'Bookings' && (
             <BookingsView
               account={loginSession}
               bookings={filteredBookings}
+              closeJob={closeJob}
               onViewBeo={(bookingId) => {
                 setActiveModule('BEOs')
                 setBeoViewBookingId(bookingId)
               }}
+              reopenJob={reopenJob}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
               setStatusFilter={setStatusFilter}
@@ -2403,11 +2762,13 @@ function App() {
                 onBack={() => setBeoViewBookingId(null)}
                 propertyProfile={propertyProfile}
                 session={loginSession}
-                updateDepartmentInstruction={updateDepartmentInstruction}
+                submitDepartmentInstruction={submitDepartmentInstruction}
               />
             ) : (
               <BeoListView
-                bookings={bookings}
+                bookings={bookings.filter(
+                  (booking) => bookingLeadTypeOf(booking) === 'BEO',
+                )}
                 onSelect={(id) => {
                   setSelectedBookingId(id)
                   setBeoViewBookingId(id)
@@ -2424,6 +2785,10 @@ function App() {
                 catalog={products}
                 documentType="Proposals"
                 onBack={() => setProposalViewBookingId(null)}
+                onOpenAgreement={() => {
+                  setActiveModule('Agreements')
+                  setAgreementViewBookingId(proposalViewBooking.id)
+                }}
                 onOpenBeo={() =>
                   runGuarded(() => {
                     setActiveModule('BEOs')
@@ -2433,6 +2798,7 @@ function App() {
                 propertyProfile={propertyProfile}
                 registerUnsavedChangesGuard={registerUnsavedChangesGuard}
                 runGuarded={runGuarded}
+                saveProposalRevision={saveProposalRevision}
                 updateBookingLineItems={updateBookingLineItems}
               />
             ) : (
@@ -2446,6 +2812,47 @@ function App() {
               />
             ))}
 
+          {activeModule === 'Agreements' &&
+            (agreementViewBooking ? (
+              <AgreementView
+                account={loginSession}
+                booking={agreementViewBooking}
+                key={agreementViewBooking.id}
+                onBack={() => setAgreementViewBookingId(null)}
+                onCreate={(agreement) => createAgreement(agreementViewBooking.id, agreement)}
+                onOpenInvoice={() => {
+                  setActiveModule('Invoices')
+                  setInvoiceViewBookingId(agreementViewBooking.id)
+                }}
+                onOpenProposal={() => {
+                  setActiveModule('Proposals')
+                  setProposalViewBookingId(agreementViewBooking.id)
+                }}
+                onRemoveSignedFile={() => removeSignedAgreement(agreementViewBooking.id)}
+                onSave={(content, note) =>
+                  saveAgreementRevision(
+                    agreementViewBooking.id,
+                    content,
+                    loginSession.displayName.trim() || 'Unknown user',
+                    note,
+                  )
+                }
+                onSetStatus={(status) => setAgreementStatus(agreementViewBooking.id, status)}
+                onUploadSignedFile={(file) => uploadSignedAgreement(agreementViewBooking.id, file)}
+                propertyProfile={propertyProfile}
+                registerUnsavedChangesGuard={registerUnsavedChangesGuard}
+                runGuarded={runGuarded}
+              />
+            ) : (
+              <AgreementsListView
+                bookings={bookings}
+                onSelect={(id) => {
+                  setSelectedBookingId(id)
+                  setAgreementViewBookingId(id)
+                }}
+              />
+            ))}
+
           {activeModule === 'Invoices' &&
             (invoiceViewBooking ? (
               <DocumentsView
@@ -2455,6 +2862,10 @@ function App() {
                 catalog={products}
                 documentType="Invoices"
                 onBack={() => setInvoiceViewBookingId(null)}
+                onOpenAgreement={() => {
+                  setActiveModule('Agreements')
+                  setAgreementViewBookingId(invoiceViewBooking.id)
+                }}
                 onOpenBeo={() =>
                   runGuarded(() => {
                     setActiveModule('BEOs')
@@ -2464,6 +2875,7 @@ function App() {
                 propertyProfile={propertyProfile}
                 registerUnsavedChangesGuard={registerUnsavedChangesGuard}
                 runGuarded={runGuarded}
+                saveProposalRevision={saveProposalRevision}
                 updateBookingLineItems={updateBookingLineItems}
               />
             ) : (
@@ -3100,6 +3512,7 @@ function NewBookingView({
     const id = `BKG-${String(timestamp).slice(-5)}${Math.random().toString(36).slice(2, 5)}`
     const booking: EventBooking = {
       id,
+      leadType: form.leadType,
       eventName: form.eventName.trim(),
       eventType: form.eventType.trim(),
       account: form.account.trim(),
@@ -3149,7 +3562,13 @@ function NewBookingView({
         ...splitList(form.specialRequests),
       ],
       billingCompany: form.billingCompany.trim(),
+      billingCompanyName: form.billingCompanyName.trim(),
+      billingAddress: form.billingAddress.trim(),
+      billingTaxId: form.billingTaxId.trim(),
       paymentMethod: form.paymentMethod.trim(),
+      // HR gets its own department section on the BEO rather than being
+      // folded into the shared special-instructions list.
+      ...(form.hr.trim() ? { departmentInstructions: { HR: form.hr.trim() } } : {}),
       internalNotes: form.internalNotes.trim(),
       clientNotes: form.clientNotes.trim(),
       beoNumber: `BEO-DRAFT-${id.replace('BKG-', '')}`,
@@ -3191,6 +3610,18 @@ function NewBookingView({
           <fieldset className="panel form-section">
             <legend>Client and event</legend>
             <div className="form-grid">
+              <FormField label="Document track">
+                <select
+                  onChange={(event) => updateField('leadType', event.target.value as LeadType)}
+                  value={form.leadType}
+                >
+                  {LEAD_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type === 'BEO' ? 'BEO (single function)' : 'Group Resume (multi-day group)'}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
               <FormField label="Event name" required>
                 <input
                   onChange={(event) => updateField('eventName', event.target.value)}
@@ -3500,6 +3931,13 @@ function NewBookingView({
                   value={form.vendors}
                 />
               </FormField>
+              <FormField hint="Casual crew, overtime approval, uniform and grooming notes." label="HR">
+                <textarea
+                  onChange={(event) => updateField('hr', event.target.value)}
+                  placeholder="Extra casual staff x6, overtime approved, name badges..."
+                  value={form.hr}
+                />
+              </FormField>
             </div>
           </fieldset>
 
@@ -3518,6 +3956,27 @@ function NewBookingView({
                   onChange={(event) => updateField('paymentMethod', event.target.value)}
                   placeholder="Bank transfer"
                   value={form.paymentMethod}
+                />
+              </FormField>
+              <FormField hint="Legal entity name as it must appear on the tax invoice." label="Company name">
+                <input
+                  onChange={(event) => updateField('billingCompanyName', event.target.value)}
+                  placeholder="Stream Events Asia Co., Ltd."
+                  value={form.billingCompanyName}
+                />
+              </FormField>
+              <FormField hint="13-digit taxpayer identification number." label="TAX ID">
+                <input
+                  onChange={(event) => updateField('billingTaxId', event.target.value)}
+                  placeholder="0105558000000"
+                  value={form.billingTaxId}
+                />
+              </FormField>
+              <FormField asGroup label="Address">
+                <textarea
+                  onChange={(event) => updateField('billingAddress', event.target.value)}
+                  placeholder="Registered address for the tax invoice..."
+                  value={form.billingAddress}
                 />
               </FormField>
             </div>
@@ -3672,6 +4131,9 @@ function DashboardView({
     ['Unpaid', 'Deposit due', 'Partial'].includes(booking.paymentStatus),
   )
   const openLeads = leads.filter((lead) => lead.stage !== 'Won' && lead.stage !== 'Lost')
+  // Step 6 of the sales flow: past events nobody has closed out. This is the
+  // reminder — the closeout form itself lives on the booking.
+  const jobsToClose = openJobsToClose(bookings)
 
   const weekAheadKey = toDateKey(
     new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 7),
@@ -3727,10 +4189,46 @@ function DashboardView({
         <MetricCard
           icon={TriangleAlert}
           label="Needs attention"
-          value={(overdueFollowUps + unpaidInvoices.length).toString()}
-          detail="Follow-ups and payment items"
+          value={(overdueFollowUps + unpaidInvoices.length + jobsToClose.length).toString()}
+          detail="Follow-ups, payments, and jobs to close"
         />
       </section>
+
+      {jobsToClose.length > 0 && (
+        <section className="panel">
+          <PanelHeader
+            detail="These events have finished. Close each one to record the final guest count and revenue."
+            title={`Jobs to close (${jobsToClose.length})`}
+          />
+          <div className="banner-list">
+            {jobsToClose.slice(0, 6).map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => {
+                  setSelectedBookingId(booking.id)
+                  setActiveModule('Bookings')
+                }}
+                type="button"
+              >
+                <span className="banner-status">{booking.status}</span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.account} · finished {booking.date}
+                  </span>
+                </div>
+                <span className="banner-meta">{booking.venue}</span>
+                <strong className="banner-value">{money(booking.forecastRevenue)}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {jobsToClose.length > 6 && (
+              <p>{jobsToClose.length - 6} more waiting to be closed.</p>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="split-layout">
         <div className="panel wide-panel">
@@ -4013,7 +4511,21 @@ function CalendarView({
   )
 }
 
-function emptyLead(): Lead {
+function leadTypeClass(type: LeadType) {
+  return type === 'Group Resume' ? 'type-group' : 'type-beo'
+}
+
+// Leads seeded before the BEO / Group Resume split have no type; treat them as
+// the single-function BEO track so nothing disappears from either list.
+function leadTypeOf(lead: Lead): LeadType {
+  return lead.leadType ?? 'BEO'
+}
+
+function bookingLeadTypeOf(booking: EventBooking): LeadType {
+  return booking.leadType ?? 'BEO'
+}
+
+function emptyLead(leadType: LeadType = 'BEO'): Lead {
   return {
     id: `LEAD-${Date.now()}`,
     name: 'New lead',
@@ -4023,11 +4535,58 @@ function emptyLead(): Lead {
     source: '',
     category: '',
     stage: 'New',
+    leadType,
     estimatedValue: 0,
     owner: '',
     createdAt: toDateKey(new Date()),
     notes: '',
     history: [{ id: `HIST-${Date.now()}`, timestamp: toDateKey(new Date()), note: 'Lead created' }],
+  }
+}
+
+/**
+ * Pull a CRM customer profile into a new lead. Everything the profile already
+ * knows is carried across so nobody re-types a known client; the notes field
+ * gets the qualifying context (budget, venue, behaviour) rather than losing it.
+ */
+function leadFromAccount(account: Account, leadType: LeadType, owner: string): Lead {
+  const base = emptyLead(leadType)
+  // Past average spend is a better opening estimate than zero for a repeat
+  // client; a first-time profile has no events and keeps 0.
+  const averageSpend =
+    account.events > 0 ? Math.round(account.totalRevenue / account.events) : 0
+  const notes = [
+    account.notes,
+    account.behavior,
+    account.budgetRange ? `Budget range: ${account.budgetRange}` : '',
+    account.preferredVenue ? `Preferred venue: ${account.preferredVenue}` : '',
+    account.preferredPackages.length
+      ? `Preferred packages: ${account.preferredPackages.join(', ')}`
+      : '',
+    account.dietary.length ? `Dietary/service: ${account.dietary.join(', ')}` : '',
+  ]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n')
+
+  return {
+    ...base,
+    name: account.contact || account.name,
+    company: account.name,
+    email: account.email,
+    phone: account.phone,
+    source: account.leadSource,
+    category: account.preferredPackages[0] ?? '',
+    estimatedValue: averageSpend,
+    owner,
+    notes,
+    history: [
+      {
+        id: `HIST-${Date.now()}`,
+        timestamp: toDateKey(new Date()),
+        note: `Lead pulled in from CRM profile ${account.id} (${account.name})`,
+      },
+    ],
   }
 }
 
@@ -4185,6 +4744,31 @@ function LeadDetailView({
           )}
         </div>
 
+        <div className="lead-type-row">
+          <span className="lead-type-label">Lead type</span>
+          {canEdit ? (
+            <div className="lead-type-switch" role="group">
+              {LEAD_TYPES.map((type) => (
+                <button
+                  className={leadTypeOf(lead) === type ? 'is-active' : ''}
+                  key={type}
+                  onClick={() => updateLead(lead.id, 'leadType', type)}
+                  type="button"
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="lead-type-pill">{leadTypeOf(lead)}</span>
+          )}
+          <span className="lead-type-hint">
+            {leadTypeOf(lead) === 'Group Resume'
+              ? 'Worked as a multi-day group; listed under Group Resume.'
+              : 'Worked as a single function; listed under BEOs once converted.'}
+          </span>
+        </div>
+
         {isEditing ? (
           <div className="plan-edit-form">
             <FormField label="Contact name">
@@ -4222,6 +4806,20 @@ function LeadDetailView({
                 onChange={(event) => updateLead(lead.id, 'category', event.target.value)}
                 value={lead.category}
               />
+            </FormField>
+            <FormField label="Lead type">
+              <select
+                onChange={(event) =>
+                  updateLead(lead.id, 'leadType', event.target.value as LeadType)
+                }
+                value={leadTypeOf(lead)}
+              >
+                {LEAD_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
             </FormField>
             <FormField label="Stage">
               <select
@@ -4270,6 +4868,7 @@ function LeadDetailView({
         ) : (
           <>
             <div className="detail-grid">
+              <Detail label="Lead type" value={leadTypeOf(lead)} />
               <Detail label="Created" value={lead.createdAt} />
               <Detail label="Last updated" value={leadLastUpdated(lead)} />
               <Detail label="Email" value={lead.email || 'Not set'} />
@@ -4284,7 +4883,9 @@ function LeadDetailView({
             </div>
             <div className="drawer-section">
               <h3>Notes</h3>
-              <p>{lead.notes || 'No notes yet.'}</p>
+              {/* pre-line so multi-line notes — e.g. the block a CRM pull-in
+                  writes — keep their line breaks instead of running together. */}
+              <p className="notes-body">{lead.notes || 'No notes yet.'}</p>
             </div>
             {(lead.followUps?.length ?? 0) > 0 && (
               <div className="drawer-section">
@@ -4381,23 +4982,37 @@ function LeadDetailView({
 
 function LeadsView({
   account,
+  initialLeadId,
   leads,
+  listFooter,
   onConvert,
+  restrictToType,
   setLeads,
+  title = 'Leads',
 }: {
   account: LoginSession
+  // Opens straight onto this lead — used when arriving from a CRM pull-in.
+  initialLeadId?: string | null
   leads: Lead[]
+  // Rendered under the list, and hidden while a lead detail is open.
+  listFooter?: ReactNode
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
+  // When set, the view only shows (and only creates) leads on that track.
+  restrictToType?: LeadType
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
+  title?: string
 }) {
-  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(initialLeadId ?? null)
+  const scopedLeads = restrictToType
+    ? leads.filter((lead) => leadTypeOf(lead) === restrictToType)
+    : leads
   const canCreate = hasPermission(account.role, 'leads:create')
   const canEdit = hasPermission(account.role, 'leads:edit')
   const canConvert = hasPermission(account.role, 'booking:create')
   const canDelete = hasPermission(account.role, 'leads:delete')
   const getLeadDate = (lead: Lead) => lead.createdAt
-  const availableMonths = availableMonthsOf(leads, getLeadDate)
-  const availableYears = availableYearsOf(leads, getLeadDate)
+  const availableMonths = availableMonthsOf(scopedLeads, getLeadDate)
+  const availableYears = availableYearsOf(scopedLeads, getLeadDate)
   const [viewMode, setViewMode] = useState<ListViewMode>('grid')
   const [timeFilter, setTimeFilter] = useState<TimeFilterMode>('All')
   const [selectedMonth, setSelectedMonth] = useState(
@@ -4407,7 +5022,7 @@ function LeadsView({
     () => availableYears[availableYears.length - 1] ?? '',
   )
   const visibleLeads = filterAndSortByTime(
-    leads,
+    scopedLeads,
     getLeadDate,
     timeFilter,
     selectedMonth,
@@ -4466,7 +5081,7 @@ function LeadsView({
   }
 
   const createLead = () => {
-    const lead = emptyLead()
+    const lead = emptyLead(restrictToType ?? 'BEO')
     setLeads((current) => [lead, ...current])
     setSelectedLeadId(lead.id)
   }
@@ -4477,7 +5092,7 @@ function LeadsView({
     if (selectedLeadId === id) setSelectedLeadId(null)
   }
 
-  const selectedLead = leads.find((lead) => lead.id === selectedLeadId)
+  const selectedLead = scopedLeads.find((lead) => lead.id === selectedLeadId)
 
   if (selectedLead) {
     return (
@@ -4502,7 +5117,7 @@ function LeadsView({
         <PanelHeader
           action={canCreate ? 'New lead' : undefined}
           onAction={canCreate ? createLead : undefined}
-          title="Leads"
+          title={title}
         />
         <ListViewControls
           availableMonths={availableMonths}
@@ -4526,6 +5141,11 @@ function LeadsView({
                 type="button"
               >
                 <span>{lead.stage}</span>
+                {!restrictToType && (
+                  <span className={`lead-type-tag ${leadTypeClass(leadTypeOf(lead))}`}>
+                    {leadTypeOf(lead)}
+                  </span>
+                )}
                 <strong>
                   {lead.name}
                   {lead.company ? ` · ${lead.company}` : ''}
@@ -4544,7 +5164,12 @@ function LeadsView({
                 <p className="note-line">{lead.notes || 'No notes yet.'}</p>
               </button>
             ))}
-            {!visibleLeads.length && <p>No leads for this period.</p>}
+            {!visibleLeads.length && (
+              <p>
+                No {restrictToType === 'Group Resume' ? 'group resume ' : ''}leads for this
+                period.
+              </p>
+            )}
           </div>
         ) : (
           <div className="banner-list">
@@ -4562,8 +5187,13 @@ function LeadsView({
                     {lead.company ? ` · ${lead.company}` : ''}
                   </strong>
                   <span>
-                    {[lead.category, lead.source].filter(Boolean).join(' — ') ||
-                      'No category/source set'}
+                    {[
+                      restrictToType ? '' : leadTypeOf(lead),
+                      lead.category,
+                      lead.source,
+                    ]
+                      .filter(Boolean)
+                      .join(' — ') || 'No category/source set'}
                   </span>
                 </div>
                 <span className="banner-meta">{lead.owner || 'Unassigned'}</span>
@@ -4571,9 +5201,1230 @@ function LeadsView({
                 <ChevronRight size={16} />
               </button>
             ))}
-            {!visibleLeads.length && <p>No leads for this period.</p>}
+            {!visibleLeads.length && (
+              <p>
+                No {restrictToType === 'Group Resume' ? 'group resume ' : ''}leads for this
+                period.
+              </p>
+            )}
           </div>
         )}
+      </section>
+      {listFooter}
+    </div>
+  )
+}
+
+function GroupResumeView({
+  account,
+  bookings,
+  initialLeadId,
+  leads,
+  onConvert,
+  onOpenBooking,
+  onSaveResume,
+  propertyProfile,
+  setLeads,
+}: {
+  account: LoginSession
+  bookings: EventBooking[]
+  initialLeadId?: string | null
+  leads: Lead[]
+  onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
+  onOpenBooking: (bookingId: string) => void
+  onSaveResume: (bookingId: string, resume: GroupResume) => void
+  propertyProfile: PropertyProfile
+  setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
+}) {
+  const [openResumeId, setOpenResumeId] = useState<string | null>(null)
+  const groupBookings = bookings
+    .filter((booking) => bookingLeadTypeOf(booking) === 'Group Resume')
+    .sort((first, second) => first.date.localeCompare(second.date))
+  const openBooking = groupBookings.find((booking) => booking.id === openResumeId)
+
+  if (openBooking) {
+    return (
+      <GroupResumeDocumentView
+        booking={openBooking}
+        canEdit={hasPermission(account.role, 'proposal:edit')}
+        key={openBooking.id}
+        onBack={() => setOpenResumeId(null)}
+        onOpenBooking={() => onOpenBooking(openBooking.id)}
+        onSave={(resume) => onSaveResume(openBooking.id, resume)}
+        propertyProfile={propertyProfile}
+      />
+    )
+  }
+
+  return (
+    <LeadsView
+      account={account}
+      initialLeadId={initialLeadId}
+      leads={leads}
+      listFooter={
+        <section className="panel">
+          <PanelHeader
+            detail="Open a group to write or print its resume"
+            title="Converted groups"
+          />
+          <div className="banner-list">
+            {groupBookings.map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => setOpenResumeId(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">
+                  {booking.groupResume?.revision
+                    ? `Rev ${booking.groupResume.revision}`
+                    : 'Draft'}
+                </span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.account} · {booking.date}
+                  </span>
+                </div>
+                <span className="banner-meta">
+                  {booking.venue}, {booking.room}
+                </span>
+                <strong className="banner-value">{money(booking.forecastRevenue)}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!groupBookings.length && (
+              <p>
+                No bookings on the group resume track yet. Convert a group resume lead, or set a
+                booking's document track to Group Resume when you create it.
+              </p>
+            )}
+          </div>
+        </section>
+      }
+      onConvert={onConvert}
+      restrictToType="Group Resume"
+      setLeads={setLeads}
+      title="Group resume leads"
+    />
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * Group resume document
+ *
+ * The multi-day group's internal operating document. Layout follows the
+ * resort's existing printed group resume: memo header, group information,
+ * day-by-day itinerary, rooming list, room details, functions, revenue
+ * summary, and payment / billing instructions over a signature block.
+ * ------------------------------------------------------------------ */
+
+/** Ids only need to be unique within one document's lifetime. */
+function grId(prefix: string) {
+  return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+}
+
+/** rate x rooms x nights x pax, treating a blank factor as 1. */
+function grRowTotal(row: Pick<GroupResumeRevenueRow, 'rate' | 'rooms' | 'nights' | 'pax'>) {
+  return Math.round((row.rate ?? 0) * (row.rooms || 1) * (row.nights || 1) * (row.pax || 1))
+}
+
+function grGrandTotal(rows: GroupResumeRevenueRow[]) {
+  return rows
+    .filter((row) => row.kind === 'line')
+    .reduce((sum, row) => sum + (row.total || 0), 0)
+}
+
+/** Seed a resume from everything the booking already knows. */
+function groupResumeDefaults(booking: EventBooking, propertyProfile: PropertyProfile): GroupResume {
+  const lineRows: GroupResumeRevenueRow[] = (booking.lineItems ?? []).map((item) => ({
+    id: grId('rev'),
+    kind: 'line',
+    details: item.description,
+    rate: item.unitPrice,
+    rooms: null,
+    nights: null,
+    pax: item.quantity || null,
+    total: Math.round(item.unitPrice * (item.quantity || 1)),
+  }))
+
+  return {
+    issueDate: toDateKey(new Date()),
+    updated: false,
+    subject: `${booking.account} — ${booking.eventName}`,
+    from: 'Sales Department',
+    to: [],
+    cc: ['General Manager', 'All Sales Department'],
+    intro: `Please join me in welcoming the participants of ${booking.account}, who will be staying at ${propertyProfile.name}.`,
+    groupName: booking.account,
+    organizer: booking.account,
+    leaderName: booking.contact,
+    leaderPhone: '',
+    leaderEmail: '',
+    checkIn: booking.date,
+    checkOut: booking.date,
+    groupSize: booking.expectedGuests ? `${booking.expectedGuests} persons` : '',
+    roomCount: '',
+    profile: '',
+    days: [
+      {
+        id: grId('day'),
+        label: 'Day 1',
+        date: booking.date,
+        location: booking.venue,
+        overnight: `Overnight at ${propertyProfile.name}`,
+        items: [
+          { id: grId('it'), time: booking.setupTime, detail: 'Setup and vendor access' },
+          { id: grId('it'), time: booking.startTime, detail: booking.eventName },
+          { id: grId('it'), time: booking.endTime, detail: 'Function concludes' },
+        ],
+      },
+    ],
+    guests: [],
+    roomRate: '',
+    roomBenefits: [],
+    functions: [
+      {
+        id: grId('fn'),
+        name: booking.eventName,
+        date: booking.date,
+        venue: `${booking.venue}, ${booking.room}`,
+        notes: '',
+      },
+    ],
+    revenueRows: lineRows.length
+      ? lineRows
+      : [
+          {
+            id: grId('rev'),
+            kind: 'line',
+            details: booking.packageName || booking.eventName,
+            rate: booking.forecastRevenue,
+            rooms: null,
+            nights: null,
+            pax: null,
+            total: booking.forecastRevenue,
+          },
+        ],
+    paymentNotes: [],
+    billingInstructions: [
+      'Accommodation will be charged to MASTER ACCOUNT.',
+      'Other expense charge to guest OWN ACCOUNT.',
+    ],
+    closingNote: 'Thank you for your co-operation.',
+    preparedBy: booking.owner || propertyProfile.signatoryName,
+    preparedByTitle: propertyProfile.signatoryTitle || 'Sales Manager',
+    revision: 0,
+  }
+}
+
+/** One label/value row of the memo header or group information block. */
+function GrRow({
+  children,
+  label,
+}: {
+  children: React.ReactNode
+  label: string
+}) {
+  return (
+    <div className="gr-row">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  )
+}
+
+/** Reads as plain text until the document is in edit mode. */
+function GrText({
+  editing,
+  multiline,
+  onChange,
+  placeholder,
+  value,
+}: {
+  editing: boolean
+  multiline?: boolean
+  onChange: (next: string) => void
+  placeholder?: string
+  value: string
+}) {
+  if (!editing) return <span className="gr-value">{value || <em>—</em>}</span>
+  return multiline ? (
+    <textarea
+      className="gr-input"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      rows={3}
+      value={value}
+    />
+  ) : (
+    <input
+      className="gr-input"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      value={value}
+    />
+  )
+}
+
+/** One entry per line. Deliberately not comma-split: entries carry money
+ *  amounts like "THB 651,520" that a comma split would tear in half. */
+function GrList({
+  editing,
+  onChange,
+  placeholder,
+  value,
+}: {
+  editing: boolean
+  onChange: (next: string[]) => void
+  placeholder?: string
+  value: string[]
+}) {
+  // The textarea keeps its own raw text so a freshly pressed Enter (an empty
+  // trailing line the parsed array drops) survives until it is typed into.
+  const [text, setText] = useState(value.join('\n'))
+  const [syncedFrom, setSyncedFrom] = useState(value)
+  if (syncedFrom !== value) {
+    setSyncedFrom(value)
+    setText(value.join('\n'))
+  }
+
+  if (!editing)
+    return (
+      <span className="gr-value">
+        {value.length ? (
+          value.map((entry, index) => <span key={`${entry}-${index}`}>{entry}</span>)
+        ) : (
+          <em>—</em>
+        )}
+      </span>
+    )
+
+  return (
+    <textarea
+      className="gr-input"
+      onChange={(event) => {
+        const raw = event.target.value
+        const next = raw
+          .split('\n')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+        setText(raw)
+        // The parent stores this exact array, so the sync check above sees a
+        // matching identity next render and leaves the raw text alone.
+        setSyncedFrom(next)
+        onChange(next)
+      }}
+      placeholder={placeholder}
+      rows={3}
+      value={text}
+    />
+  )
+}
+
+function GroupResumeDocumentView({
+  booking,
+  canEdit,
+  onBack,
+  onOpenBooking,
+  onSave,
+  propertyProfile,
+}: {
+  booking: EventBooking
+  canEdit: boolean
+  onBack: () => void
+  onOpenBooking: () => void
+  onSave: (resume: GroupResume) => void
+  propertyProfile: PropertyProfile
+}) {
+  // Built once per mount (the caller keys this view by booking id) so the
+  // unsaved fallback keeps a stable identity across renders.
+  const [fallback] = useState(() => groupResumeDefaults(booking, propertyProfile))
+  const saved = booking.groupResume ?? fallback
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<GroupResume>(fallback)
+  const [showPdfPreview, setShowPdfPreview] = useState(false)
+
+  // Re-sync when the caller saves or a different booking is opened.
+  const [syncedFrom, setSyncedFrom] = useState(fallback)
+  if (!editing && syncedFrom !== saved) {
+    setSyncedFrom(saved)
+    setDraft(saved)
+  }
+
+  const resume = editing ? draft : saved
+  const setField = <K extends keyof GroupResume>(field: K, value: GroupResume[K]) => {
+    setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  const grandTotal = grGrandTotal(resume.revenueRows)
+
+  const startEditing = () => {
+    setDraft(saved)
+    setEditing(true)
+  }
+  const cancelEditing = () => {
+    setDraft(saved)
+    setEditing(false)
+  }
+  const saveEditing = () => {
+    // Every save is a numbered revision, matching proposals and agreements.
+    onSave({ ...draft, revision: saved.revision + 1, updated: saved.revision > 0 })
+    setEditing(false)
+  }
+
+  /* ---- itinerary ---- */
+  const updateDay = (dayId: string, patch: Partial<GroupResumeDay>) =>
+    setDraft((current) => ({
+      ...current,
+      days: current.days.map((day) => (day.id === dayId ? { ...day, ...patch } : day)),
+    }))
+  const addDay = () =>
+    setDraft((current) => ({
+      ...current,
+      days: [
+        ...current.days,
+        {
+          id: grId('day'),
+          label: `Day ${current.days.length + 1}`,
+          date: '',
+          location: '',
+          overnight: `Overnight at ${propertyProfile.name}`,
+          items: [{ id: grId('it'), time: '', detail: '' }],
+        },
+      ],
+    }))
+  const removeDay = (dayId: string) =>
+    setDraft((current) => ({ ...current, days: current.days.filter((day) => day.id !== dayId) }))
+  const updateItem = (dayId: string, itemId: string, patch: Partial<GroupResumeItineraryItem>) =>
+    setDraft((current) => ({
+      ...current,
+      days: current.days.map((day) =>
+        day.id === dayId
+          ? {
+              ...day,
+              items: day.items.map((item) =>
+                item.id === itemId ? { ...item, ...patch } : item,
+              ),
+            }
+          : day,
+      ),
+    }))
+  const addItem = (dayId: string) =>
+    setDraft((current) => ({
+      ...current,
+      days: current.days.map((day) =>
+        day.id === dayId
+          ? { ...day, items: [...day.items, { id: grId('it'), time: '', detail: '' }] }
+          : day,
+      ),
+    }))
+  const removeItem = (dayId: string, itemId: string) =>
+    setDraft((current) => ({
+      ...current,
+      days: current.days.map((day) =>
+        day.id === dayId
+          ? { ...day, items: day.items.filter((item) => item.id !== itemId) }
+          : day,
+      ),
+    }))
+
+  /* ---- rooming list ---- */
+  const updateGuest = (guestId: string, patch: Partial<GroupResumeGuest>) =>
+    setDraft((current) => ({
+      ...current,
+      guests: current.guests.map((guest) =>
+        guest.id === guestId ? { ...guest, ...patch } : guest,
+      ),
+    }))
+  const addGuest = () =>
+    setDraft((current) => ({
+      ...current,
+      guests: [
+        ...current.guests,
+        {
+          id: grId('gst'),
+          title: '',
+          firstName: '',
+          middleName: '',
+          lastName: '',
+          passportNumber: '',
+          checkIn: current.checkIn,
+          checkOut: current.checkOut,
+          nights: 0,
+          note: '',
+        },
+      ],
+    }))
+  const removeGuest = (guestId: string) =>
+    setDraft((current) => ({
+      ...current,
+      guests: current.guests.filter((guest) => guest.id !== guestId),
+    }))
+
+  /* ---- functions ---- */
+  const updateFunction = (functionId: string, patch: Partial<GroupResumeFunction>) =>
+    setDraft((current) => ({
+      ...current,
+      functions: current.functions.map((entry) =>
+        entry.id === functionId ? { ...entry, ...patch } : entry,
+      ),
+    }))
+  const addFunction = () =>
+    setDraft((current) => ({
+      ...current,
+      functions: [
+        ...current.functions,
+        { id: grId('fn'), name: '', date: '', venue: '', notes: '' },
+      ],
+    }))
+  const removeFunction = (functionId: string) =>
+    setDraft((current) => ({
+      ...current,
+      functions: current.functions.filter((entry) => entry.id !== functionId),
+    }))
+
+  /* ---- revenue ---- */
+  const updateRow = (rowId: string, patch: Partial<GroupResumeRevenueRow>) =>
+    setDraft((current) => ({
+      ...current,
+      revenueRows: current.revenueRows.map((row) => {
+        if (row.id !== rowId) return row
+        const next = { ...row, ...patch }
+        // Any change to a factor re-derives the total; typing in the total
+        // column itself still wins because that patch carries `total`.
+        return 'total' in patch ? next : { ...next, total: grRowTotal(next) }
+      }),
+    }))
+  const addRow = (kind: GroupResumeRevenueRow['kind']) =>
+    setDraft((current) => ({
+      ...current,
+      revenueRows: [
+        ...current.revenueRows,
+        {
+          id: grId('rev'),
+          kind,
+          details: '',
+          rate: null,
+          rooms: null,
+          nights: null,
+          pax: null,
+          total: 0,
+        },
+      ],
+    }))
+  const removeRow = (rowId: string) =>
+    setDraft((current) => ({
+      ...current,
+      revenueRows: current.revenueRows.filter((row) => row.id !== rowId),
+    }))
+
+  const numberValue = (value: number | null) => (value === null ? '' : String(value))
+  const parseNumber = (value: string) => (value.trim() === '' ? null : Number(value) || 0)
+
+  const paperDocument = (
+    <div className="paper print-doc group-resume-doc">
+      <div className="paper-head">
+        <div>
+          <span>{propertyProfile.name}</span>
+          <strong>GROUP RESUME</strong>
+        </div>
+        <div>
+          <span>{booking.id}</span>
+          <strong>
+            {resume.revision > 0 ? `Revision ${resume.revision}` : 'Draft'}
+          </strong>
+        </div>
+      </div>
+
+      {resume.updated && <p className="gr-updated-flag">UPDATED</p>}
+
+      <dl className="gr-memo">
+        <GrRow label="Issue date">
+          <GrText
+            editing={editing}
+            onChange={(next) => setField('issueDate', next)}
+            value={resume.issueDate}
+          />
+        </GrRow>
+        <GrRow label="Subject">
+          <GrText
+            editing={editing}
+            onChange={(next) => setField('subject', next)}
+            value={resume.subject}
+          />
+        </GrRow>
+        <GrRow label="From">
+          <GrText
+            editing={editing}
+            onChange={(next) => setField('from', next)}
+            value={resume.from}
+          />
+        </GrRow>
+        <GrRow label="To">
+          <GrList
+            editing={editing}
+            onChange={(next) => setField('to', next)}
+            placeholder="One name per line"
+            value={resume.to}
+          />
+        </GrRow>
+        <GrRow label="CC">
+          <GrList
+            editing={editing}
+            onChange={(next) => setField('cc', next)}
+            placeholder="One name per line"
+            value={resume.cc}
+          />
+        </GrRow>
+      </dl>
+
+      <div className="gr-paragraph">
+        <GrText
+          editing={editing}
+          multiline
+          onChange={(next) => setField('intro', next)}
+          value={resume.intro}
+        />
+      </div>
+
+      <PaperSection title="Group information">
+        <dl className="gr-memo">
+          <GrRow label="Group name">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('groupName', next)}
+              value={resume.groupName}
+            />
+          </GrRow>
+          <GrRow label="Organizer name">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('organizer', next)}
+              value={resume.organizer}
+            />
+          </GrRow>
+          <GrRow label="Group leader name">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('leaderName', next)}
+              value={resume.leaderName}
+            />
+          </GrRow>
+          <GrRow label="Telephone no.">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('leaderPhone', next)}
+              value={resume.leaderPhone}
+            />
+          </GrRow>
+          <GrRow label="Email">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('leaderEmail', next)}
+              value={resume.leaderEmail}
+            />
+          </GrRow>
+          <GrRow label="Check-in date">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('checkIn', next)}
+              value={resume.checkIn}
+            />
+          </GrRow>
+          <GrRow label="Check-out date">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('checkOut', next)}
+              value={resume.checkOut}
+            />
+          </GrRow>
+          <GrRow label="Group size">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('groupSize', next)}
+              placeholder="15 persons and 1 organizer"
+              value={resume.groupSize}
+            />
+          </GrRow>
+          <GrRow label="Number of rooms">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('roomCount', next)}
+              placeholder="17 rooms / single occupancy"
+              value={resume.roomCount}
+            />
+          </GrRow>
+        </dl>
+        <div className="gr-paragraph">
+          <GrText
+            editing={editing}
+            multiline
+            onChange={(next) => setField('profile', next)}
+            placeholder="Short profile of the group or their company..."
+            value={resume.profile}
+          />
+        </div>
+      </PaperSection>
+
+      <PaperSection title="Itinerary">
+        <div className="gr-days">
+          {resume.days.map((day) => (
+            <div className="gr-day" key={day.id}>
+              <div className="gr-day-head">
+                {editing ? (
+                  <>
+                    <input
+                      className="gr-input gr-input-narrow"
+                      onChange={(event) => updateDay(day.id, { label: event.target.value })}
+                      placeholder="Day 1"
+                      value={day.label}
+                    />
+                    <input
+                      className="gr-input"
+                      onChange={(event) => updateDay(day.id, { date: event.target.value })}
+                      placeholder="Monday 12 May 2025"
+                      value={day.date}
+                    />
+                    <input
+                      className="gr-input"
+                      onChange={(event) => updateDay(day.id, { location: event.target.value })}
+                      placeholder="Chiang Mai, Thailand"
+                      value={day.location}
+                    />
+                    <button
+                      className="text-action danger-action no-print"
+                      onClick={() => removeDay(day.id)}
+                      type="button"
+                    >
+                      Remove day
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <strong>{day.label}</strong>
+                    <span>{day.date}</span>
+                    <span className="gr-day-location">{day.location}</span>
+                  </>
+                )}
+              </div>
+
+              <div className="gr-rundown">
+                {day.items.map((item) =>
+                  editing ? (
+                    <div className="gr-rundown-edit" key={item.id}>
+                      <input
+                        className="gr-input gr-input-narrow"
+                        onChange={(event) =>
+                          updateItem(day.id, item.id, { time: event.target.value })
+                        }
+                        placeholder="09:00hrs"
+                        value={item.time}
+                      />
+                      <textarea
+                        className="gr-input"
+                        onChange={(event) =>
+                          updateItem(day.id, item.id, { detail: event.target.value })
+                        }
+                        placeholder="What happens"
+                        rows={2}
+                        value={item.detail}
+                      />
+                      <label className="gr-check">
+                        <input
+                          checked={Boolean(item.emphasis)}
+                          onChange={(event) =>
+                            updateItem(day.id, item.id, { emphasis: event.target.checked })
+                          }
+                          type="checkbox"
+                        />
+                        Note
+                      </label>
+                      <button
+                        className="text-action danger-action no-print"
+                        onClick={() => removeItem(day.id, item.id)}
+                        type="button"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="gr-rundown-row" key={item.id}>
+                      <span>{item.time}</span>
+                      <p className={item.emphasis ? 'gr-note' : undefined}>{item.detail}</p>
+                    </div>
+                  ),
+                )}
+                {editing && (
+                  <button
+                    className="text-action no-print"
+                    onClick={() => addItem(day.id)}
+                    type="button"
+                  >
+                    <Plus size={14} />
+                    Add line
+                  </button>
+                )}
+              </div>
+
+              <div className="gr-overnight">
+                <GrText
+                  editing={editing}
+                  onChange={(next) => updateDay(day.id, { overnight: next })}
+                  value={day.overnight}
+                />
+              </div>
+            </div>
+          ))}
+          {!resume.days.length && <p className="empty-state">No itinerary days yet.</p>}
+          {editing && (
+            <button className="secondary-action no-print" onClick={addDay} type="button">
+              <Plus size={16} />
+              Add day
+            </button>
+          )}
+        </div>
+      </PaperSection>
+
+      <PaperSection title="Rooming list">
+        <div className="gr-table-scroll">
+          <table className="gr-table">
+            <thead>
+              <tr>
+                <th>No.</th>
+                <th>Title</th>
+                <th>First name</th>
+                <th>Middle name</th>
+                <th>Last name</th>
+                <th>Passport number</th>
+                <th>Check-in</th>
+                <th>Check-out</th>
+                <th>Nights</th>
+                <th>Note</th>
+                {editing && <th aria-label="Remove" className="no-print" />}
+              </tr>
+            </thead>
+            <tbody>
+              {resume.guests.map((guest, index) => (
+                <tr key={guest.id}>
+                  <td>{index + 1}</td>
+                  {(
+                    [
+                      ['title', 'Mr'],
+                      ['firstName', 'First'],
+                      ['middleName', ''],
+                      ['lastName', 'Last'],
+                      ['passportNumber', 'Passport'],
+                      ['checkIn', '2025-05-12'],
+                      ['checkOut', '2025-05-18'],
+                    ] as Array<[keyof GroupResumeGuest, string]>
+                  ).map(([field, placeholder]) => (
+                    <td key={field}>
+                      {editing ? (
+                        <input
+                          className="gr-input"
+                          onChange={(event) =>
+                            updateGuest(guest.id, { [field]: event.target.value })
+                          }
+                          placeholder={placeholder}
+                          value={String(guest[field] ?? '')}
+                        />
+                      ) : (
+                        String(guest[field] ?? '')
+                      )}
+                    </td>
+                  ))}
+                  <td>
+                    {editing ? (
+                      <input
+                        className="gr-input gr-input-narrow"
+                        onChange={(event) =>
+                          updateGuest(guest.id, { nights: Number(event.target.value) || 0 })
+                        }
+                        type="number"
+                        value={guest.nights || ''}
+                      />
+                    ) : (
+                      guest.nights || ''
+                    )}
+                  </td>
+                  <td>
+                    {editing ? (
+                      <input
+                        className="gr-input"
+                        onChange={(event) => updateGuest(guest.id, { note: event.target.value })}
+                        placeholder="Cancelled with charge"
+                        value={guest.note}
+                      />
+                    ) : (
+                      guest.note
+                    )}
+                  </td>
+                  {editing && (
+                    <td className="no-print">
+                      <button
+                        className="text-action danger-action"
+                        onClick={() => removeGuest(guest.id)}
+                        type="button"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {!resume.guests.length && (
+                <tr>
+                  <td className="gr-empty-cell" colSpan={editing ? 11 : 10}>
+                    No guests added yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {editing && (
+          <button className="secondary-action no-print" onClick={addGuest} type="button">
+            <Plus size={16} />
+            Add guest
+          </button>
+        )}
+      </PaperSection>
+
+      <PaperSection title="Room details">
+        <dl className="gr-memo">
+          <GrRow label="Room rate">
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('roomRate', next)}
+              placeholder="Romantic Lanna Deluxe THB 4,100 net per room per night including breakfast"
+              value={resume.roomRate}
+            />
+          </GrRow>
+          <GrRow label="Room benefit">
+            <GrList
+              editing={editing}
+              onChange={(next) => setField('roomBenefits', next)}
+              placeholder="One benefit per line"
+              value={resume.roomBenefits}
+            />
+          </GrRow>
+        </dl>
+      </PaperSection>
+
+      <PaperSection title="Functions">
+        <div className="gr-functions">
+          {resume.functions.map((entry) => (
+            <div className="gr-function" key={entry.id}>
+              {editing ? (
+                <>
+                  <input
+                    className="gr-input"
+                    onChange={(event) => updateFunction(entry.id, { name: event.target.value })}
+                    placeholder="Welcome dinner"
+                    value={entry.name}
+                  />
+                  <input
+                    className="gr-input"
+                    onChange={(event) => updateFunction(entry.id, { date: event.target.value })}
+                    placeholder="Monday, 12 May 2025"
+                    value={entry.date}
+                  />
+                  <input
+                    className="gr-input"
+                    onChange={(event) => updateFunction(entry.id, { venue: event.target.value })}
+                    placeholder="Pre-dinner canape at Lawn, dinner at Glasshouse"
+                    value={entry.venue}
+                  />
+                  <textarea
+                    className="gr-input"
+                    onChange={(event) => updateFunction(entry.id, { notes: event.target.value })}
+                    placeholder="Decoration, performance, BEO reference..."
+                    rows={2}
+                    value={entry.notes}
+                  />
+                  <button
+                    className="text-action danger-action no-print"
+                    onClick={() => removeFunction(entry.id)}
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </>
+              ) : (
+                <>
+                  <strong>{entry.name}</strong>
+                  <div className="paper-grid compact-paper-grid">
+                    <Detail label="Date" value={entry.date || '—'} />
+                    <Detail label="Venue" value={entry.venue || '—'} />
+                  </div>
+                  {entry.notes && <p>{entry.notes}</p>}
+                </>
+              )}
+            </div>
+          ))}
+          {!resume.functions.length && <p className="empty-state">No functions listed yet.</p>}
+          {editing && (
+            <button className="secondary-action no-print" onClick={addFunction} type="button">
+              <Plus size={16} />
+              Add function
+            </button>
+          )}
+        </div>
+      </PaperSection>
+
+      <PaperSection title="Summary revenue">
+        <div className="gr-table-scroll">
+          <table className="gr-table gr-revenue-table">
+            <thead>
+              <tr>
+                <th>Details</th>
+                <th>Rate</th>
+                <th>Room</th>
+                <th>Night</th>
+                <th>Pax</th>
+                <th>Total</th>
+                {editing && <th aria-label="Remove" className="no-print" />}
+              </tr>
+            </thead>
+            <tbody>
+              {resume.revenueRows.map((row) =>
+                row.kind === 'heading' && !editing ? (
+                  <tr className="gr-revenue-heading" key={row.id}>
+                    <td colSpan={6}>{row.details}</td>
+                  </tr>
+                ) : (
+                  <tr className={row.kind === 'heading' ? 'gr-revenue-heading' : undefined} key={row.id}>
+                    <td>
+                      {editing ? (
+                        <input
+                          className="gr-input"
+                          onChange={(event) => updateRow(row.id, { details: event.target.value })}
+                          placeholder={row.kind === 'heading' ? 'Function - 12 May 2025' : 'Romantic Lanna Deluxe'}
+                          value={row.details}
+                        />
+                      ) : (
+                        row.details
+                      )}
+                    </td>
+                    {row.kind === 'heading' ? (
+                      <td className="no-print" colSpan={5} />
+                    ) : (
+                      (
+                        [
+                          ['rate', row.rate],
+                          ['rooms', row.rooms],
+                          ['nights', row.nights],
+                          ['pax', row.pax],
+                        ] as Array<[keyof GroupResumeRevenueRow, number | null]>
+                      ).map(([field, value]) => (
+                        <td key={field}>
+                          {editing ? (
+                            <input
+                              className="gr-input gr-input-narrow"
+                              onChange={(event) =>
+                                updateRow(row.id, { [field]: parseNumber(event.target.value) })
+                              }
+                              type="number"
+                              value={numberValue(value)}
+                            />
+                          ) : value === null ? (
+                            ''
+                          ) : (
+                            value.toLocaleString('en-US')
+                          )}
+                        </td>
+                      ))
+                    )}
+                    {row.kind === 'line' && (
+                      <td className="gr-total-cell">
+                        {editing ? (
+                          <input
+                            className="gr-input gr-input-narrow"
+                            onChange={(event) =>
+                              updateRow(row.id, { total: Number(event.target.value) || 0 })
+                            }
+                            type="number"
+                            value={row.total || ''}
+                          />
+                        ) : (
+                          row.total.toLocaleString('en-US')
+                        )}
+                      </td>
+                    )}
+                    {editing && (
+                      <td className="no-print">
+                        <button
+                          className="text-action danger-action"
+                          onClick={() => removeRow(row.id)}
+                          type="button"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ),
+              )}
+              <tr className="gr-revenue-total">
+                <td colSpan={5}>GRAND TOTAL</td>
+                <td className="gr-total-cell">{grandTotal.toLocaleString('en-US')}</td>
+                {editing && <td className="no-print" />}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        {editing && (
+          <div className="gr-row-actions no-print">
+            <button className="secondary-action" onClick={() => addRow('line')} type="button">
+              <Plus size={16} />
+              Add line
+            </button>
+            <button className="secondary-action" onClick={() => addRow('heading')} type="button">
+              <Plus size={16} />
+              Add heading
+            </button>
+          </div>
+        )}
+      </PaperSection>
+
+      <PaperSection title="Payment">
+        <GrList
+          editing={editing}
+          onChange={(next) => setField('paymentNotes', next)}
+          placeholder="Full pre-payment of THB 651,520 net already paid"
+          value={resume.paymentNotes}
+        />
+      </PaperSection>
+
+      <PaperSection title="Billing instruction">
+        <GrList
+          editing={editing}
+          onChange={(next) => setField('billingInstructions', next)}
+          placeholder="Accommodation charged to MASTER ACCOUNT"
+          value={resume.billingInstructions}
+        />
+        {(booking.billingCompanyName || booking.billingTaxId || booking.billingAddress) && (
+          <div className="paper-grid compact-paper-grid">
+            <Detail label="Company name" value={booking.billingCompanyName || booking.account} />
+            <Detail label="TAX ID" value={booking.billingTaxId || '—'} />
+            <Detail label="Address" value={booking.billingAddress || '—'} />
+          </div>
+        )}
+      </PaperSection>
+
+      <div className="gr-paragraph">
+        <GrText
+          editing={editing}
+          onChange={(next) => setField('closingNote', next)}
+          value={resume.closingNote}
+        />
+      </div>
+
+      <div className="proposal-signature-row">
+        <div className="signatory-column">
+          <strong>
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('preparedBy', next)}
+              value={resume.preparedBy}
+            />
+          </strong>
+          <small>
+            <GrText
+              editing={editing}
+              onChange={(next) => setField('preparedByTitle', next)}
+              value={resume.preparedByTitle}
+            />
+          </small>
+        </div>
+        <div className="signatory-column">
+          <strong>{propertyProfile.signatoryName || 'General Manager'}</strong>
+          <small>Acknowledged — {propertyProfile.name}</small>
+        </div>
+      </div>
+    </div>
+  )
+
+  if (showPdfPreview) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={() => setShowPdfPreview(false)}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back
+        </button>
+
+        <section className="document-preview single-document">
+          <div className="document-toolbar no-print">
+            <div>
+              <p className="eyebrow">Group resume</p>
+              <h2>{booking.eventName}</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button className="primary-action" onClick={() => window.print()} type="button">
+                <Download size={16} />
+                Print
+              </button>
+            </div>
+          </div>
+          {paperDocument}
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to Group Resume
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">
+              Group resume · {resume.revision > 0 ? `Revision ${resume.revision}` : 'Draft'}
+            </p>
+            <h2>{booking.eventName}</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button className="secondary-action" onClick={onOpenBooking} type="button">
+              <ClipboardList size={16} />
+              Open booking
+            </button>
+            {canEdit &&
+              (editing ? (
+                <>
+                  <button className="secondary-action" onClick={cancelEditing} type="button">
+                    Cancel
+                  </button>
+                  <button className="primary-action" onClick={saveEditing} type="button">
+                    <CheckCircle2 size={16} />
+                    Save as revision {saved.revision + 1}
+                  </button>
+                </>
+              ) : (
+                <button className="primary-action" onClick={startEditing} type="button">
+                  Edit resume
+                </button>
+              ))}
+            <button
+              className="secondary-action"
+              onClick={() => setShowPdfPreview(true)}
+              type="button"
+            >
+              <Download size={16} />
+              View PDF
+            </button>
+          </div>
+        </div>
+
+        {paperDocument}
       </section>
     </div>
   )
@@ -4581,13 +6432,37 @@ function LeadsView({
 
 function CrmView({
   bookings,
+  canCreateLead,
+  leads,
+  onPullIntoLeads,
 }: {
   bookings: EventBooking[]
+  canCreateLead: boolean
+  leads: Lead[]
+  onPullIntoLeads: (account: Account, leadType: LeadType) => void
 }) {
-  return <CustomerDirectory bookings={bookings} />
+  return (
+    <CustomerDirectory
+      bookings={bookings}
+      canCreateLead={canCreateLead}
+      leads={leads}
+      onPullIntoLeads={onPullIntoLeads}
+    />
+  )
 }
 
-function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
+function CustomerDirectory({
+  bookings,
+  canCreateLead,
+  leads,
+  onPullIntoLeads,
+}: {
+  bookings: EventBooking[]
+  canCreateLead: boolean
+  leads: Lead[]
+  onPullIntoLeads: (account: Account, leadType: LeadType) => void
+}) {
+  const [pullTrack, setPullTrack] = useState<LeadType>('BEO')
   const [selectedAccountId, setSelectedAccountId] = useState(accounts[0]?.id)
   const sortedAccounts = [...accounts].sort((first, second) =>
     first.name.localeCompare(second.name),
@@ -4596,6 +6471,14 @@ function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
     accounts.find((account) => account.id === selectedAccountId) ?? accounts[0]
   const selectedAccountBookings = bookings.filter(
     (booking) => booking.account === selectedAccount.name,
+  )
+  // Leads already raised for this company, so a pull-in never silently
+  // duplicates one somebody else opened last week.
+  const selectedAccountLeads = leads.filter(
+    (lead) => lead.company === selectedAccount.name,
+  )
+  const openAccountLeads = selectedAccountLeads.filter(
+    (lead) => lead.stage !== 'Won' && lead.stage !== 'Lost',
   )
   const groupedAccounts = sortedAccounts.reduce<Record<string, Account[]>>(
     (groups, account) => {
@@ -4725,6 +6608,64 @@ function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
           <p>{selectedAccount.notes}</p>
         </div>
 
+        <div className="drawer-section crm-pull-section">
+          <h3>
+            <Sparkles size={16} />
+            Leads
+          </h3>
+          {selectedAccountLeads.length > 0 ? (
+            <div className="profile-booking-list">
+              {selectedAccountLeads.map((lead) => (
+                <div className="profile-booking-row" key={lead.id}>
+                  <div>
+                    <strong>{lead.name}</strong>
+                    <span>
+                      {lead.stage} · {shortDate(lead.createdAt)}
+                    </span>
+                  </div>
+                  <span className={`lead-type-tag ${leadTypeClass(leadTypeOf(lead))}`}>
+                    {leadTypeOf(lead)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p>No leads raised for this customer yet.</p>
+          )}
+
+          {canCreateLead && (
+            <div className="crm-pull-actions">
+              {openAccountLeads.length > 0 && (
+                <p className="panel-header-detail">
+                  {openAccountLeads.length} lead
+                  {openAccountLeads.length > 1 ? 's are' : ' is'} still open for this customer —
+                  check before raising another.
+                </p>
+              )}
+              <FormField label="Track">
+                <select
+                  onChange={(event) => setPullTrack(event.target.value as LeadType)}
+                  value={pullTrack}
+                >
+                  {LEAD_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type === 'BEO' ? 'BEO (single function)' : 'Group Resume (multi-day group)'}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+              <button
+                className="primary-action full-width"
+                onClick={() => onPullIntoLeads(selectedAccount, pullTrack)}
+                type="button"
+              >
+                <Sparkles size={17} />
+                Create lead from this profile
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="drawer-section">
           <h3>Active bookings</h3>
           <div className="profile-booking-list">
@@ -4753,7 +6694,9 @@ function CustomerDirectory({ bookings }: { bookings: EventBooking[] }) {
 function BookingsView({
   account,
   bookings,
+  closeJob,
   onViewBeo,
+  reopenJob,
   selectedBookingId,
   setSelectedBookingId,
   setStatusFilter,
@@ -4762,7 +6705,9 @@ function BookingsView({
 }: {
   account: LoginSession
   bookings: EventBooking[]
+  closeJob: (bookingId: string, closure: JobClosure) => void
   onViewBeo: (bookingId: string) => void
+  reopenJob: (bookingId: string) => void
   selectedBookingId?: string
   setSelectedBookingId: (id: string) => void
   setStatusFilter: (status: BookingStatus | 'All') => void
@@ -4879,6 +6824,14 @@ function BookingsView({
               View BEO
             </button>
           </div>
+
+          <JobClosurePanel
+            booking={selectedBooking}
+            canClose={canAdvance}
+            key={selectedBooking.id}
+            onClose={(closure) => closeJob(selectedBooking.id, closure)}
+            onReopen={() => reopenJob(selectedBooking.id)}
+          />
           {(canFallBack || canAdvance) && (
             <div className="status-actions">
               {canFallBack && (
@@ -4909,6 +6862,146 @@ function BookingsView({
       )}
     </div>
   )
+}
+
+/**
+ * Post-event closeout. Shown once the event date has passed (or the booking is
+ * already Completed): capture the final numbers, then the job is done. Until
+ * it is closed the dashboard keeps nagging about it.
+ */
+function JobClosurePanel({
+  booking,
+  canClose,
+  onClose,
+  onReopen,
+}: {
+  booking: EventBooking
+  canClose: boolean
+  onClose: (closure: JobClosure) => void
+  onReopen: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [actualGuests, setActualGuests] = useState(
+    String(booking.actualGuests ?? booking.guaranteedGuests ?? ''),
+  )
+  const [finalRevenue, setFinalRevenue] = useState(
+    String(booking.revenue || booking.forecastRevenue || ''),
+  )
+  const [outstanding, setOutstanding] = useState('0')
+  const [notes, setNotes] = useState('')
+
+  const closure = booking.closure
+
+  if (closure) {
+    return (
+      <div className="drawer-section closure-section">
+        <h3>
+          <FileCheck2 size={16} />
+          Job closed
+        </h3>
+        <div className="detail-grid">
+          <Detail label="Closed" value={`${closure.closedAt} by ${closure.closedBy}`} />
+          <Detail label="Actual guests" value={String(closure.actualGuests)} />
+          <Detail label="Final revenue" value={money(closure.finalRevenue)} />
+          <Detail label="Outstanding" value={money(closure.outstandingBalance)} />
+        </div>
+        {closure.notes && <p>{closure.notes}</p>}
+        {canClose && (
+          <button className="text-action" onClick={onReopen} type="button">
+            Reopen job
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (!isClosable(booking)) return null
+
+  return (
+    <div className="drawer-section closure-section">
+      <h3>
+        <TriangleAlert size={16} />
+        Ready to close
+      </h3>
+      <p>
+        This event finished on {booking.date} and has not been closed out yet.
+      </p>
+      {!canClose ? (
+        <p className="panel-header-detail">Ask a manager to close this job.</p>
+      ) : !open ? (
+        <button className="primary-action full-width" onClick={() => setOpen(true)} type="button">
+          <CheckCircle2 size={17} />
+          Close the job
+        </button>
+      ) : (
+        <div className="closure-form">
+          <FormField label="Actual guests">
+            <input
+              onChange={(event) => setActualGuests(event.target.value)}
+              type="number"
+              value={actualGuests}
+            />
+          </FormField>
+          <FormField label="Final revenue (THB)">
+            <input
+              onChange={(event) => setFinalRevenue(event.target.value)}
+              type="number"
+              value={finalRevenue}
+            />
+          </FormField>
+          <FormField label="Outstanding balance (THB)">
+            <input
+              onChange={(event) => setOutstanding(event.target.value)}
+              type="number"
+              value={outstanding}
+            />
+          </FormField>
+          <FormField asGroup label="Closing notes">
+            <textarea
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="What went well, what to carry into the next event, anything still owed..."
+              value={notes}
+            />
+          </FormField>
+          <div className="status-actions">
+            <button className="secondary-action" onClick={() => setOpen(false)} type="button">
+              Cancel
+            </button>
+            <button
+              className="primary-action"
+              onClick={() =>
+                onClose({
+                  closedAt: toStampKey(new Date()),
+                  closedBy: '',
+                  actualGuests: Number(actualGuests) || 0,
+                  finalRevenue: Number(finalRevenue) || 0,
+                  outstandingBalance: Number(outstanding) || 0,
+                  notes: notes.trim(),
+                })
+              }
+              type="button"
+            >
+              <CheckCircle2 size={17} />
+              Confirm close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A job is closable once its event date has passed and it did not fall through. */
+function isClosable(booking: EventBooking) {
+  if (booking.closure) return false
+  if (booking.status === 'Lost' || booking.status === 'Cancelled') return false
+  if (booking.status === 'Inquiry') return false
+  return booking.date < toDateKey(new Date())
+}
+
+/** Everything past its event date that nobody has closed out yet. */
+function openJobsToClose(bookings: EventBooking[]) {
+  return bookings.filter(isClosable).sort((first, second) => first.date.localeCompare(second.date))
 }
 
 function BeoListView({
@@ -5021,7 +7114,7 @@ function BeoView({
   onBack,
   propertyProfile,
   session,
-  updateDepartmentInstruction,
+  submitDepartmentInstruction,
 }: {
   acknowledgeDepartment: (bookingId: string, dept: BeoDepartment, by: string) => void
   appendBeoHistory: (bookingId: string, note: string) => void
@@ -5032,7 +7125,12 @@ function BeoView({
   onBack: () => void
   propertyProfile: PropertyProfile
   session: LoginSession
-  updateDepartmentInstruction: (bookingId: string, dept: BeoDepartment, text: string) => void
+  submitDepartmentInstruction: (
+    bookingId: string,
+    dept: BeoDepartment,
+    text: string,
+    by: string,
+  ) => void
 }) {
   const isDepartmentViewer = session.role === 'beo_viewer'
   // Show the configured departments plus any this booking already has data for,
@@ -5042,6 +7140,7 @@ function BeoView({
       ...departments,
       ...Object.keys(booking.departmentInstructions ?? {}),
       ...Object.keys(booking.departmentAcks ?? {}),
+      ...(booking.departmentMessages ?? []).map((message) => message.department),
     ]),
   )
   const canEditInstructions = hasPermission(session.role, 'proposal:edit')
@@ -5160,6 +7259,9 @@ function BeoView({
               <Detail label="Distribution" value="Sales, operations, kitchen, AV, finance" />
               <Detail label="Billed to" value={booking.billingCompany || booking.account} />
               <Detail label="Payment method" value={booking.paymentMethod || 'Not specified'} />
+              <Detail label="Company name" value={booking.billingCompanyName || '—'} />
+              <Detail label="TAX ID" value={booking.billingTaxId || '—'} />
+              <Detail label="Address" value={booking.billingAddress || '—'} />
             </div>
           </PaperSection>
 
@@ -5384,53 +7486,23 @@ function BeoView({
             </strong>
           </div>
           <div className="department-instruction-list">
-            {bookingDepartments.map((dept) => {
-              const instruction = booking.departmentInstructions?.[dept] ?? ''
-              const ack = booking.departmentAcks?.[dept]
-              const isMine = isDepartmentViewer && session.department === dept
-              return (
-                <div
-                  className={`department-instruction${isMine ? ' is-mine' : ''}`}
-                  key={dept}
-                >
-                  <div className="department-instruction-head">
-                    <strong>{dept}</strong>
-                    {ack ? (
-                      <span className="dept-ack ok">
-                        <CheckCircle2 size={14} />
-                        Acknowledged by {ack.by} · {ack.at}
-                      </span>
-                    ) : (
-                      <span className="dept-ack pending">Awaiting acknowledgement</span>
-                    )}
-                  </div>
-                  {canEditInstructions ? (
-                    <textarea
-                      onChange={(event) =>
-                        updateDepartmentInstruction(booking.id, dept, event.target.value)
-                      }
-                      placeholder={`What does the client need from ${dept}?`}
-                      value={instruction}
-                    />
-                  ) : (
-                    <p>{instruction || 'No specific instructions for this department.'}</p>
-                  )}
-                  {isMine && instruction && !ack && (
-                    <button
-                      className="primary-action"
-                      onClick={() => acknowledgeDepartment(booking.id, dept, viewerName)}
-                      type="button"
-                    >
-                      <CheckCircle2 size={16} />
-                      Acknowledge instructions
-                    </button>
-                  )}
-                  {isMine && ack && (
-                    <span className="dept-ack-note">You acknowledged this on {ack.at}.</span>
-                  )}
-                </div>
-              )
-            })}
+            {bookingDepartments.map((dept) => (
+              <DepartmentInstructionCard
+                ack={booking.departmentAcks?.[dept]}
+                canEdit={canEditInstructions}
+                department={dept}
+                instruction={booking.departmentInstructions?.[dept] ?? ''}
+                isMine={isDepartmentViewer && session.department === dept}
+                key={dept}
+                messages={(booking.departmentMessages ?? []).filter(
+                  (message) => message.department === dept,
+                )}
+                onAcknowledge={() => acknowledgeDepartment(booking.id, dept, viewerName)}
+                onSubmit={(text) =>
+                  submitDepartmentInstruction(booking.id, dept, text, viewerName)
+                }
+              />
+            ))}
           </div>
         </section>
 
@@ -5455,6 +7527,113 @@ function BeoView({
           )}
         </div>
       </section>
+    </div>
+  )
+}
+
+function DepartmentInstructionCard({
+  ack,
+  canEdit,
+  department,
+  instruction,
+  isMine,
+  messages,
+  onAcknowledge,
+  onSubmit,
+}: {
+  ack?: DepartmentAck
+  canEdit: boolean
+  department: BeoDepartment
+  instruction: string
+  isMine: boolean
+  messages: DepartmentMessage[]
+  onAcknowledge: () => void
+  onSubmit: (text: string) => void
+}) {
+  // The textarea holds an unsent draft; nothing reaches the department until it
+  // is submitted, so the stored instruction is always what was actually sent.
+  const [draft, setDraft] = useState(instruction)
+  const trimmedDraft = draft.trim()
+  const canSend = Boolean(trimmedDraft) && trimmedDraft !== instruction
+  const timeline = [...messages].sort((first, second) =>
+    first.at.localeCompare(second.at),
+  )
+
+  return (
+    <div className={`department-instruction${isMine ? ' is-mine' : ''}`}>
+      <div className="department-instruction-head">
+        <strong>{department}</strong>
+        {ack ? (
+          <span className="dept-ack ok">
+            <CheckCircle2 size={14} />
+            Acknowledged by {ack.by} · {ack.at}
+          </span>
+        ) : (
+          <span className="dept-ack pending">Awaiting acknowledgement</span>
+        )}
+      </div>
+      {canEdit ? (
+        <>
+          <textarea
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={`What does the client need from ${department}?`}
+            value={draft}
+          />
+          <div className="department-instruction-actions">
+            <span className="department-instruction-hint">
+              {canSend
+                ? 'Not sent yet — submit to notify the department.'
+                : instruction
+                  ? 'Current instructions are up to date.'
+                  : 'No instructions sent to this department yet.'}
+            </span>
+            <button
+              className="primary-action"
+              disabled={!canSend}
+              onClick={() => onSubmit(draft)}
+              type="button"
+            >
+              <Send size={15} />
+              {instruction ? 'Send update' : 'Send to department'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <p>{instruction || 'No specific instructions for this department.'}</p>
+      )}
+      {isMine && instruction && !ack && (
+        <button className="primary-action" onClick={onAcknowledge} type="button">
+          <CheckCircle2 size={16} />
+          Acknowledge instructions
+        </button>
+      )}
+      {isMine && ack && (
+        <span className="dept-ack-note">You acknowledged this on {ack.at}.</span>
+      )}
+      <div className="department-message-log">
+        <span className="department-message-log-title">
+          <MessageSquare size={13} />
+          Message timeline
+        </span>
+        {timeline.length ? (
+          <ol className="department-message-timeline">
+            {timeline.map((message) => (
+              <li className={`department-message ${message.kind}`} key={message.id}>
+                <span className="department-message-dot" />
+                <div>
+                  <p>{message.text}</p>
+                  <span>
+                    {message.kind === 'acknowledgement' ? 'Acknowledged' : 'Sent'} by{' '}
+                    {message.by} · {message.at}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="department-message-empty">Nothing recorded for this department yet.</p>
+        )}
+      </div>
     </div>
   )
 }
@@ -5704,6 +7883,16 @@ function DiscountControl({
   )
 }
 
+/** Same arithmetic as documentTotal, over a frozen proposal snapshot. */
+function snapshotTotal(snapshot: ProposalSnapshot) {
+  const subtotal = snapshot.lineItems.reduce(
+    (sum, item) => sum + item.quantity * item.unitPrice,
+    0,
+  )
+  const netOfDiscount = subtotal - discountAmount(subtotal, snapshot.discount)
+  return netOfDiscount * 1.1 * 1.07
+}
+
 function documentTotal(booking: EventBooking) {
   const lineItems = getLineItems(booking)
   const discount = getDiscount(booking)
@@ -5818,10 +8007,12 @@ function DocumentsView({
   catalog,
   documentType,
   onBack,
+  onOpenAgreement,
   onOpenBeo,
   propertyProfile,
   registerUnsavedChangesGuard,
   runGuarded,
+  saveProposalRevision,
   updateBookingLineItems,
 }: {
   account: LoginSession
@@ -5830,13 +8021,30 @@ function DocumentsView({
   catalog: Product[]
   documentType: 'Proposals' | 'Invoices'
   onBack: () => void
+  onOpenAgreement?: () => void
   onOpenBeo: () => void
   propertyProfile: PropertyProfile
   registerUnsavedChangesGuard: (guard: { isDirty: () => boolean; message: string } | null) => void
   runGuarded: (action: () => void) => void
+  saveProposalRevision: (
+    bookingId: string,
+    lineItems: LineItem[],
+    discount: Discount,
+    savedBy: string,
+    note: string,
+  ) => void
   updateBookingLineItems: (bookingId: string, lineItems: LineItem[], discount: Discount) => void
 }) {
+  const isProposal = documentType === 'Proposals'
   const [isEditing, setIsEditing] = useState(false)
+  const [viewingRevision, setViewingRevision] = useState<ProposalRevision | null>(null)
+  // What the client last received. Invoices keep overwriting in place; only
+  // proposals are versioned, because only proposals go back and forth.
+  const proposalRevisions = [...(booking.proposalRevisions ?? [])].sort(
+    (first, second) => first.number - second.number,
+  )
+  const currentRevision = booking.proposalRevision ?? 0
+  const [revisionNote, setRevisionNote] = useState('')
   const canEdit = hasPermission(account.role, 'proposal:edit')
   const savedLineItems = getLineItems(booking)
   const savedDiscount = getDiscount(booking)
@@ -5860,6 +8068,10 @@ function DocumentsView({
   )
 
   const unsavedChangesMessage = `Discard unsaved changes to this ${documentType === 'Proposals' ? 'proposal' : 'invoice'}?`
+  // Step 4 of the sales flow: an invoice should only go out once the client's
+  // countersigned agreement is actually on file. Surfaced as a warning rather
+  // than a hard block so existing bookings are not stranded.
+  const signedAgreementOnFile = Boolean(booking.agreement?.signedFile)
 
   // Any navigation away from this view — including clicks elsewhere in the app
   // like the sidebar — routes through the shared runGuarded/confirm-dialog
@@ -5881,8 +8093,19 @@ function DocumentsView({
     runGuarded(() => setIsEditing(false))
   }
   const handleSaveEditing = () => {
-    updateBookingLineItems(booking.id, draftLineItems, draftDiscount)
-    appendDocumentHistory(booking.id, 'Line items updated')
+    if (isProposal) {
+      saveProposalRevision(
+        booking.id,
+        draftLineItems,
+        draftDiscount,
+        account.displayName.trim() || 'Unknown user',
+        revisionNote.trim(),
+      )
+      setRevisionNote('')
+    } else {
+      updateBookingLineItems(booking.id, draftLineItems, draftDiscount)
+      appendDocumentHistory(booking.id, 'Line items updated')
+    }
     setIsEditing(false)
   }
   const handleBack = () => {
@@ -5914,7 +8137,13 @@ function DocumentsView({
           </div>
           <div>
             <span>{booking.id}</span>
-            <strong>{booking.date}</strong>
+            <strong>
+              {isProposal
+                ? currentRevision > 0
+                  ? `Revision ${currentRevision}`
+                  : 'Draft'
+                : booking.date}
+            </strong>
           </div>
         </div>
 
@@ -5927,6 +8156,16 @@ function DocumentsView({
           <Detail label="Guests" value={`${booking.expectedGuests} expected`} />
         </div>
 
+        {(booking.billingCompanyName || booking.billingAddress || booking.billingTaxId) && (
+          <PaperSection title="Bill to">
+            <div className="paper-grid compact-paper-grid">
+              <Detail label="Company name" value={booking.billingCompanyName || booking.account} />
+              <Detail label="TAX ID" value={booking.billingTaxId || '—'} />
+              <Detail label="Address" value={booking.billingAddress || '—'} />
+            </div>
+          </PaperSection>
+        )}
+
         <PaperSection title="Line items">
           <LineItemsEditor
             catalog={catalog}
@@ -5935,6 +8174,20 @@ function DocumentsView({
             onChange={handleLineItemsChange}
           />
         </PaperSection>
+
+        {isProposal && isEditing && (
+          <div className="revision-note-field no-print">
+            <label htmlFor="proposal-revision-note">
+              What changed in Revision {currentRevision + 1}?
+            </label>
+            <input
+              id="proposal-revision-note"
+              onChange={(event) => setRevisionNote(event.target.value)}
+              placeholder="Client moved to the Lawn and added a canape round"
+              value={revisionNote}
+            />
+          </div>
+        )}
 
         {(isEditing || discount.mode !== 'none') && (
           <PaperSection title="Discount">
@@ -5992,6 +8245,16 @@ function DocumentsView({
     </div>
   )
 
+  if (viewingRevision) {
+    return (
+      <ProposalRevisionView
+        onBack={() => setViewingRevision(null)}
+        propertyProfile={propertyProfile}
+        revision={viewingRevision}
+      />
+    )
+  }
+
   if (showPdfPreview) {
     return (
       <div className="page-stack">
@@ -6046,7 +8309,11 @@ function DocumentsView({
       <section className="document-preview single-document">
         <div className="document-toolbar no-print">
           <div>
-            <p className="eyebrow">{documentType === 'Proposals' ? 'Proposal' : 'Proforma invoice'}</p>
+            <p className="eyebrow">
+              {isProposal
+                ? `Proposal · ${currentRevision > 0 ? `Revision ${currentRevision}` : 'Draft'}`
+                : 'Proforma invoice'}
+            </p>
             <h2>{booking.eventName}</h2>
           </div>
           <div className="toolbar-actions">
@@ -6054,6 +8321,12 @@ function DocumentsView({
               <ClipboardList size={16} />
               Open BEO
             </button>
+            {isProposal && onOpenAgreement && (
+              <button className="secondary-action" onClick={() => runGuarded(onOpenAgreement)} type="button">
+                <Scale size={16} />
+                {booking.agreement ? 'Open agreement' : 'Convert to agreement'}
+              </button>
+            )}
             {canEdit &&
               (isEditing ? (
                 <>
@@ -6067,12 +8340,12 @@ function DocumentsView({
                     type="button"
                   >
                     <CheckCircle2 size={16} />
-                    Save changes
+                    {isProposal ? `Save as revision ${currentRevision + 1}` : 'Save changes'}
                   </button>
                 </>
               ) : (
                 <button className="primary-action" onClick={handleStartEditing} type="button">
-                  Edit line items
+                  {isProposal ? 'Edit proposal' : 'Edit line items'}
                 </button>
               ))}
             <button className="secondary-action" onClick={shareWithClient} type="button">
@@ -6090,8 +8363,67 @@ function DocumentsView({
           </div>
         </div>
 
+        {!isProposal && !signedAgreementOnFile && (
+          <div className="gate-banner no-print">
+            <TriangleAlert size={18} />
+            <div>
+              <strong>No signed agreement on file</strong>
+              <span>
+                {booking.agreement
+                  ? 'The agreement exists but the countersigned copy has not been uploaded yet. Upload it before sending this invoice.'
+                  : 'This booking has no agreement yet. Generate one from the proposal and upload the signed copy before sending this invoice.'}
+              </span>
+            </div>
+            {onOpenAgreement && (
+              <button className="secondary-action" onClick={() => runGuarded(onOpenAgreement)} type="button">
+                <Scale size={16} />
+                {booking.agreement ? 'Open agreement' : 'Create agreement'}
+              </button>
+            )}
+          </div>
+        )}
+
         {paperDocument}
       </section>
+
+      {isProposal && (
+        <section className="panel no-print">
+          <PanelHeader
+            detail="Every save cuts a numbered revision. Open one to read exactly what the client received."
+            title="Revisions"
+          />
+          <div className="banner-list">
+            {proposalRevisions
+              .slice()
+              .reverse()
+              .map((revision) => (
+                <button
+                  className="banner-row"
+                  key={revision.id}
+                  onClick={() => setViewingRevision(revision)}
+                  type="button"
+                >
+                  <span className="banner-status">Rev {revision.number}</span>
+                  <div className="banner-main">
+                    <strong>{revision.note || 'No change note'}</strong>
+                    <span>
+                      {revision.savedBy} · {revision.savedAt}
+                    </span>
+                  </div>
+                  <strong className="banner-value">
+                    {money(snapshotTotal(revision.snapshot))}
+                  </strong>
+                  <ChevronRight size={16} />
+                </button>
+              ))}
+            {!proposalRevisions.length && (
+              <p>
+                No revisions yet. Editing and saving this proposal records Revision 1.
+              </p>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="panel no-print">
         <PanelHeader title="History" />
@@ -6109,6 +8441,1125 @@ function DocumentsView({
           ) : (
             <p>No history recorded yet.</p>
           )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+/**
+ * A past proposal revision, exactly as it was saved. Read-only by design:
+ * correcting history would defeat the point of numbering revisions.
+ */
+function ProposalRevisionView({
+  onBack,
+  propertyProfile,
+  revision,
+}: {
+  onBack: () => void
+  propertyProfile: PropertyProfile
+  revision: ProposalRevision
+}) {
+  const snapshot = revision.snapshot
+  const subtotal = snapshot.lineItems.reduce(
+    (sum, item) => sum + item.quantity * item.unitPrice,
+    0,
+  )
+  const discountValue = discountAmount(subtotal, snapshot.discount)
+  const netOfDiscount = subtotal - discountValue
+  const serviceCharge = netOfDiscount * 0.1
+  const tax = (netOfDiscount + serviceCharge) * 0.07
+  const total = netOfDiscount + serviceCharge + tax
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to proposal
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">Proposal · Revision {revision.number} (archived)</p>
+            <h2>{snapshot.eventName}</h2>
+            <p className="panel-header-detail">
+              Saved by {revision.savedBy} on {revision.savedAt}
+              {revision.note ? ` — ${revision.note}` : ''}
+            </p>
+          </div>
+          <div className="toolbar-actions">
+            <button className="primary-action" onClick={() => window.print()} type="button">
+              <Download size={16} />
+              Print
+            </button>
+          </div>
+        </div>
+
+        <div className="paper print-doc">
+          <div className="paper-head">
+            <div>
+              <span>{propertyProfile.name}</span>
+              <strong>Event Proposal</strong>
+            </div>
+            <div>
+              <span>{revision.savedAt}</span>
+              <strong>Revision {revision.number}</strong>
+            </div>
+          </div>
+
+          <div className="paper-grid">
+            <Detail label="Prepared for" value={snapshot.account} />
+            <Detail label="Contact" value={snapshot.contact} />
+            <Detail label="Event type" value={snapshot.eventType} />
+            <Detail label="Package" value={snapshot.packageName} />
+            <Detail label="Venue" value={`${snapshot.venue}, ${snapshot.room}`} />
+            <Detail label="Guests" value={`${snapshot.expectedGuests} expected`} />
+          </div>
+
+          <PaperSection title="Line items">
+            <LineItemsEditor editable={false} lineItems={snapshot.lineItems} onChange={() => {}} />
+          </PaperSection>
+
+          {snapshot.discount.mode !== 'none' && (
+            <PaperSection title="Discount">
+              <DiscountControl discount={snapshot.discount} editable={false} onChange={() => {}} />
+            </PaperSection>
+          )}
+
+          <div className="invoice-table">
+            <div>
+              <span>Subtotal</span>
+              <strong>{money(subtotal)}</strong>
+            </div>
+            {discountValue > 0 && (
+              <div>
+                <span>Discount</span>
+                <strong>-{money(discountValue)}</strong>
+              </div>
+            )}
+            <div>
+              <span>Service charge 10%</span>
+              <strong>{money(serviceCharge)}</strong>
+            </div>
+            <div>
+              <span>VAT 7%</span>
+              <strong>{money(tax)}</strong>
+            </div>
+            <div className="total-row">
+              <span>Estimated total</span>
+              <strong>{money(total)}</strong>
+            </div>
+            <div>
+              <span>Deposit due</span>
+              <strong>{money(snapshot.depositDue)}</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * Agreements
+ *
+ * Step 3 of the sales flow: the agreed proposal becomes the contract
+ * between the property and the client. External document — printable,
+ * signed by both sides — and revised under the same numbering rule as
+ * the proposal it came from.
+ * ------------------------------------------------------------------ */
+
+const DEFAULT_AGREEMENT_CLAUSES: Array<{ heading: string; body: string }> = [
+  {
+    heading: 'Confirmation and guaranteed numbers',
+    body: 'The final guaranteed guest count must be confirmed in writing no later than seven (7) days before the event date. Charges are raised on the guaranteed count or the actual attendance, whichever is higher.',
+  },
+  {
+    heading: 'Venue and timings',
+    body: 'Access, service, and vacating times are as set out above. Extension beyond the agreed hours is subject to availability and additional charges.',
+  },
+  {
+    heading: 'Menu and beverage',
+    body: 'Menu selections and any dietary requirements must be confirmed no later than fourteen (14) days before the event date. Prices are subject to change if selections are altered after that point.',
+  },
+  {
+    heading: 'Damage and liability',
+    body: 'The client is responsible for any loss or damage to the property caused by the client, their guests, or their appointed suppliers during the event.',
+  },
+  {
+    heading: 'Force majeure',
+    body: 'Neither party is liable for failure to perform where prevented by circumstances beyond reasonable control, including natural disaster, government restriction, or public emergency.',
+  },
+]
+
+const DEFAULT_PAYMENT_SCHEDULE = [
+  'Deposit of 50% due on signing to confirm the booking.',
+  'Balance due no later than seven (7) days before the event date.',
+  'All amounts are quoted in Thai Baht and include 10% service charge and 7% VAT.',
+]
+
+const DEFAULT_CANCELLATION_POLICY = [
+  'More than 60 days before the event: deposit refundable less administrative costs.',
+  '30 to 60 days before the event: 50% of the contracted value is payable.',
+  'Less than 30 days before the event: 100% of the contracted value is payable.',
+]
+
+/** Seed the agreement from the proposal that was agreed. */
+function agreementDefaults(
+  booking: EventBooking,
+  propertyProfile: PropertyProfile,
+): Agreement {
+  const lineItems = getLineItems(booking)
+  const discount = getDiscount(booking)
+  const proposalRevision = booking.proposalRevision ?? 0
+
+  const content: AgreementContent = {
+    agreementNumber: `AGR-${booking.id.replace('BKG-', '')}`,
+    issueDate: toDateKey(new Date()),
+    providerName: propertyProfile.name,
+    providerAddress: propertyProfile.address,
+    providerSignatory: propertyProfile.signatoryName,
+    providerSignatoryTitle: propertyProfile.signatoryTitle || 'Management',
+    clientName: booking.billingCompanyName || booking.account,
+    clientAddress: booking.billingAddress ?? '',
+    clientTaxId: booking.billingTaxId ?? '',
+    clientSignatory: booking.contact,
+    clientSignatoryTitle: 'Authorized signatory',
+    eventSummary: `${booking.eventName} — ${booking.eventType || 'private event'} for ${booking.expectedGuests} guests on ${booking.date}, ${booking.startTime}-${booking.endTime} at ${booking.venue}, ${booking.room}.`,
+    clauses: DEFAULT_AGREEMENT_CLAUSES.map((clause, index) => ({
+      id: `CLS-${booking.id}-${index}`,
+      ...clause,
+    })),
+    paymentSchedule: [...DEFAULT_PAYMENT_SCHEDULE],
+    cancellationPolicy: [...DEFAULT_CANCELLATION_POLICY],
+    lineItems,
+    discount,
+  }
+
+  return {
+    status: 'Draft',
+    createdAt: toDateKey(new Date()),
+    fromProposalRevision: proposalRevision,
+    sentAt: null,
+    signedAt: null,
+    content,
+    revision: 0,
+    revisions: [],
+  }
+}
+
+function AgreementsListView({
+  bookings,
+  onSelect,
+}: {
+  bookings: EventBooking[]
+  onSelect: (bookingId: string) => void
+}) {
+  const withAgreement = bookings.filter((booking) => booking.agreement)
+  const withoutAgreement = bookings.filter((booking) => !booking.agreement)
+
+  return (
+    <div className="page-stack">
+      <section className="panel">
+        <PanelHeader
+          detail="Generated from an agreed proposal, then revised until both sides sign."
+          title="Agreements"
+        />
+        <div className="banner-list">
+          {withAgreement.map((booking) => {
+            const agreement = booking.agreement!
+            return (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">{agreement.status}</span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {agreement.content.agreementNumber} · {booking.account} ·{' '}
+                    {agreement.revision > 0 ? `Revision ${agreement.revision}` : 'Draft'}
+                  </span>
+                </div>
+                <span className="banner-meta">{booking.date}</span>
+                <strong className="banner-value">{money(documentTotal(booking))}</strong>
+                <ChevronRight size={16} />
+              </button>
+            )
+          })}
+          {!withAgreement.length && (
+            <p>
+              No agreements yet. Open a proposal and use "Convert to agreement" once the client
+              has agreed to it.
+            </p>
+          )}
+        </div>
+      </section>
+
+      {withoutAgreement.length > 0 && (
+        <section className="panel">
+          <PanelHeader
+            detail="Open one to generate its agreement from the current proposal."
+            title="Awaiting an agreement"
+          />
+          <div className="banner-list">
+            {withoutAgreement.map((booking) => (
+              <button
+                className="banner-row"
+                key={booking.id}
+                onClick={() => onSelect(booking.id)}
+                type="button"
+              >
+                <span className="banner-status">
+                  {booking.proposalRevision
+                    ? `Proposal rev ${booking.proposalRevision}`
+                    : 'Proposal draft'}
+                </span>
+                <div className="banner-main">
+                  <strong>{booking.eventName}</strong>
+                  <span>
+                    {booking.id} · {booking.account}
+                  </span>
+                </div>
+                <span className="banner-meta">{booking.date}</span>
+                <strong className="banner-value">{money(documentTotal(booking))}</strong>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}
+
+/** Editable when in edit mode, plain text otherwise. */
+function AgField({
+  editing,
+  multiline,
+  onChange,
+  placeholder,
+  value,
+}: {
+  editing: boolean
+  multiline?: boolean
+  onChange: (next: string) => void
+  placeholder?: string
+  value: string
+}) {
+  if (!editing) return <span className="ag-value">{value || <em>—</em>}</span>
+  return multiline ? (
+    <textarea
+      className="gr-input"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      rows={3}
+      value={value}
+    />
+  ) : (
+    <input
+      className="gr-input"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      value={value}
+    />
+  )
+}
+
+function AgreementView({
+  account,
+  booking,
+  onBack,
+  onCreate,
+  onOpenInvoice,
+  onOpenProposal,
+  onRemoveSignedFile,
+  onSave,
+  onSetStatus,
+  onUploadSignedFile,
+  propertyProfile,
+  registerUnsavedChangesGuard,
+  runGuarded,
+}: {
+  account: LoginSession
+  booking: EventBooking
+  onBack: () => void
+  onCreate: (agreement: Agreement) => void
+  onOpenInvoice: () => void
+  onOpenProposal: () => void
+  onRemoveSignedFile: () => void
+  onSave: (content: AgreementContent, note: string) => void
+  onSetStatus: (status: AgreementStatus) => void
+  onUploadSignedFile: (file: SignedAgreementFile) => void
+  propertyProfile: PropertyProfile
+  registerUnsavedChangesGuard: (guard: { isDirty: () => boolean; message: string } | null) => void
+  runGuarded: (action: () => void) => void
+}) {
+  const agreement = booking.agreement
+  const canEdit = hasPermission(account.role, 'proposal:edit')
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<AgreementContent | null>(agreement?.content ?? null)
+  const [revisionNote, setRevisionNote] = useState('')
+  const [viewingRevision, setViewingRevision] = useState<AgreementRevision | null>(null)
+  const [showPdfPreview, setShowPdfPreview] = useState(false)
+  const [uploadNotice, setUploadNotice] = useState('')
+
+  // Stored inline as a data URL like the photo uploads, so the cap is small.
+  const handleSignedFile = (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    setUploadNotice('')
+    if (file.size > 4 * 1024 * 1024) {
+      setUploadNotice(`${file.name} is over 4 MB — upload a smaller scan.`)
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result ?? '')
+      if (!dataUrl) {
+        setUploadNotice('That file could not be read.')
+        return
+      }
+      onUploadSignedFile({
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        dataUrl,
+        uploadedAt: toStampKey(new Date()),
+        uploadedBy: account.displayName.trim() || 'Unknown user',
+      })
+    }
+    reader.onerror = () => setUploadNotice('That file could not be read.')
+    reader.readAsDataURL(file)
+  }
+
+  const savedContent = agreement?.content ?? null
+  const [syncedFrom, setSyncedFrom] = useState(savedContent)
+  if (!editing && syncedFrom !== savedContent) {
+    setSyncedFrom(savedContent)
+    setDraft(savedContent)
+  }
+
+  const isDirty =
+    editing && draft !== null && JSON.stringify(draft) !== JSON.stringify(savedContent)
+  const unsavedChangesMessage = 'Discard unsaved changes to this agreement?'
+
+  useEffect(() => {
+    registerUnsavedChangesGuard({ isDirty: () => Boolean(isDirty), message: unsavedChangesMessage })
+    return () => registerUnsavedChangesGuard(null)
+  }, [isDirty, registerUnsavedChangesGuard])
+
+  // Nothing generated yet: offer the conversion instead of an empty document.
+  if (!agreement || !savedContent) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={onBack}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back to Agreements
+        </button>
+
+        <section className="panel">
+          <PanelHeader
+            detail="An agreement is generated from the proposal the client agreed to."
+            title={booking.eventName}
+          />
+          <div className="paper-grid">
+            <Detail label="Client" value={booking.account} />
+            <Detail label="Event date" value={booking.date} />
+            <Detail label="Venue" value={`${booking.venue}, ${booking.room}`} />
+            <Detail
+              label="Proposal"
+              value={
+                booking.proposalRevision
+                  ? `Revision ${booking.proposalRevision}`
+                  : 'Draft (never revised)'
+              }
+            />
+            <Detail label="Contracted value" value={money(documentTotal(booking))} />
+          </div>
+          <div className="toolbar-actions">
+            <button className="secondary-action" onClick={onOpenProposal} type="button">
+              <FileText size={16} />
+              Open proposal
+            </button>
+            {canEdit && (
+              <button
+                className="primary-action"
+                onClick={() => onCreate(agreementDefaults(booking, propertyProfile))}
+                type="button"
+              >
+                <Scale size={16} />
+                Generate agreement
+              </button>
+            )}
+          </div>
+          {!booking.proposalRevision && (
+            <p className="panel-header-detail">
+              This proposal has never been saved as a revision. You can still generate the
+              agreement — it will record "from proposal Revision 0".
+            </p>
+          )}
+        </section>
+      </div>
+    )
+  }
+
+  const signedFile = agreement.signedFile ?? null
+  const content = editing && draft ? draft : savedContent
+  const setField = <K extends keyof AgreementContent>(field: K, value: AgreementContent[K]) => {
+    setDraft((current) => (current ? { ...current, [field]: value } : current))
+  }
+
+  const subtotal = content.lineItems.reduce(
+    (sum, item) => sum + item.quantity * item.unitPrice,
+    0,
+  )
+  const discountValue = discountAmount(subtotal, content.discount)
+  const netOfDiscount = subtotal - discountValue
+  const serviceCharge = netOfDiscount * 0.1
+  const tax = (netOfDiscount + serviceCharge) * 0.07
+  const total = netOfDiscount + serviceCharge + tax
+
+  const updateClause = (clauseId: string, patch: Partial<AgreementClause>) =>
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            clauses: current.clauses.map((clause) =>
+              clause.id === clauseId ? { ...clause, ...patch } : clause,
+            ),
+          }
+        : current,
+    )
+  const addClause = () =>
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            clauses: [
+              ...current.clauses,
+              { id: `CLS-${Date.now().toString(36)}`, heading: '', body: '' },
+            ],
+          }
+        : current,
+    )
+  const removeClause = (clauseId: string) =>
+    setDraft((current) =>
+      current
+        ? { ...current, clauses: current.clauses.filter((clause) => clause.id !== clauseId) }
+        : current,
+    )
+
+  const startEditing = () => {
+    setDraft(savedContent)
+    setEditing(true)
+  }
+  const cancelEditing = () =>
+    runGuarded(() => {
+      setDraft(savedContent)
+      setEditing(false)
+    })
+  const saveEditing = () => {
+    if (!draft) return
+    onSave(draft, revisionNote.trim())
+    setRevisionNote('')
+    setEditing(false)
+  }
+
+  if (viewingRevision) {
+    return (
+      <AgreementRevisionView
+        onBack={() => setViewingRevision(null)}
+        propertyProfile={propertyProfile}
+        revision={viewingRevision}
+      />
+    )
+  }
+
+  const paperDocument = (
+    <div className="paper print-doc agreement-doc">
+      <div className="paper-head">
+        <div>
+          <span>{content.providerName}</span>
+          <strong>EVENT AGREEMENT</strong>
+        </div>
+        <div>
+          <span>{content.agreementNumber}</span>
+          <strong>
+            {agreement.revision > 0 ? `Revision ${agreement.revision}` : 'Draft'}
+          </strong>
+        </div>
+      </div>
+
+      <dl className="gr-memo">
+        <GrRow label="Agreement no.">
+          <AgField
+            editing={editing}
+            onChange={(next) => setField('agreementNumber', next)}
+            value={content.agreementNumber}
+          />
+        </GrRow>
+        <GrRow label="Issue date">
+          <AgField
+            editing={editing}
+            onChange={(next) => setField('issueDate', next)}
+            value={content.issueDate}
+          />
+        </GrRow>
+        <GrRow label="Status">
+          <span className="ag-value">
+            {agreement.status}
+            {agreement.signedAt ? ` on ${agreement.signedAt}` : ''}
+          </span>
+        </GrRow>
+        <GrRow label="From proposal">
+          <span className="ag-value">Revision {agreement.fromProposalRevision}</span>
+        </GrRow>
+      </dl>
+
+      <PaperSection title="Parties">
+        <div className="ag-parties">
+          <div className="ag-party">
+            <span className="eyebrow">The property</span>
+            <dl className="gr-memo">
+              <GrRow label="Name">
+                <AgField
+                  editing={editing}
+                  onChange={(next) => setField('providerName', next)}
+                  value={content.providerName}
+                />
+              </GrRow>
+              <GrRow label="Address">
+                <AgField
+                  editing={editing}
+                  multiline
+                  onChange={(next) => setField('providerAddress', next)}
+                  value={content.providerAddress}
+                />
+              </GrRow>
+            </dl>
+          </div>
+          <div className="ag-party">
+            <span className="eyebrow">The client</span>
+            <dl className="gr-memo">
+              <GrRow label="Name">
+                <AgField
+                  editing={editing}
+                  onChange={(next) => setField('clientName', next)}
+                  value={content.clientName}
+                />
+              </GrRow>
+              <GrRow label="Address">
+                <AgField
+                  editing={editing}
+                  multiline
+                  onChange={(next) => setField('clientAddress', next)}
+                  value={content.clientAddress}
+                />
+              </GrRow>
+              <GrRow label="TAX ID">
+                <AgField
+                  editing={editing}
+                  onChange={(next) => setField('clientTaxId', next)}
+                  value={content.clientTaxId}
+                />
+              </GrRow>
+            </dl>
+          </div>
+        </div>
+      </PaperSection>
+
+      <PaperSection title="The event">
+        <div className="gr-paragraph">
+          <AgField
+            editing={editing}
+            multiline
+            onChange={(next) => setField('eventSummary', next)}
+            value={content.eventSummary}
+          />
+        </div>
+      </PaperSection>
+
+      <PaperSection title="Contracted services">
+        <LineItemsEditor editable={false} lineItems={content.lineItems} onChange={() => {}} />
+      </PaperSection>
+
+      <div className="invoice-table">
+        <div>
+          <span>Subtotal</span>
+          <strong>{money(subtotal)}</strong>
+        </div>
+        {discountValue > 0 && (
+          <div>
+            <span>Discount</span>
+            <strong>-{money(discountValue)}</strong>
+          </div>
+        )}
+        <div>
+          <span>Service charge 10%</span>
+          <strong>{money(serviceCharge)}</strong>
+        </div>
+        <div>
+          <span>VAT 7%</span>
+          <strong>{money(tax)}</strong>
+        </div>
+        <div className="total-row">
+          <span>Contracted total</span>
+          <strong>{money(total)}</strong>
+        </div>
+      </div>
+
+      <PaperSection title="Payment schedule">
+        <GrList
+          editing={editing}
+          onChange={(next) => setField('paymentSchedule', next)}
+          placeholder="One term per line"
+          value={content.paymentSchedule}
+        />
+      </PaperSection>
+
+      <PaperSection title="Cancellation policy">
+        <GrList
+          editing={editing}
+          onChange={(next) => setField('cancellationPolicy', next)}
+          placeholder="One term per line"
+          value={content.cancellationPolicy}
+        />
+      </PaperSection>
+
+      <PaperSection title="Terms and conditions">
+        <ol className="ag-clauses">
+          {content.clauses.map((clause) => (
+            <li key={clause.id}>
+              {editing ? (
+                <div className="ag-clause-edit">
+                  <input
+                    className="gr-input"
+                    onChange={(event) => updateClause(clause.id, { heading: event.target.value })}
+                    placeholder="Clause heading"
+                    value={clause.heading}
+                  />
+                  <textarea
+                    className="gr-input"
+                    onChange={(event) => updateClause(clause.id, { body: event.target.value })}
+                    placeholder="Clause text"
+                    rows={3}
+                    value={clause.body}
+                  />
+                  <button
+                    className="text-action danger-action no-print"
+                    onClick={() => removeClause(clause.id)}
+                    type="button"
+                  >
+                    <Trash2 size={14} />
+                    Remove clause
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <strong>{clause.heading}</strong>
+                  <p>{clause.body}</p>
+                </>
+              )}
+            </li>
+          ))}
+        </ol>
+        {editing && (
+          <button className="secondary-action no-print" onClick={addClause} type="button">
+            <Plus size={16} />
+            Add clause
+          </button>
+        )}
+      </PaperSection>
+
+      <div className="proposal-signature-row">
+        <div className="signatory-column">
+          <strong>
+            <AgField
+              editing={editing}
+              onChange={(next) => setField('providerSignatory', next)}
+              value={content.providerSignatory}
+            />
+          </strong>
+          <small>
+            {content.providerName} —{' '}
+            <AgField
+              editing={editing}
+              onChange={(next) => setField('providerSignatoryTitle', next)}
+              value={content.providerSignatoryTitle}
+            />
+          </small>
+        </div>
+        <div className="signatory-column">
+          <strong>
+            <AgField
+              editing={editing}
+              onChange={(next) => setField('clientSignatory', next)}
+              value={content.clientSignatory}
+            />
+          </strong>
+          <small>
+            {content.clientName} —{' '}
+            <AgField
+              editing={editing}
+              onChange={(next) => setField('clientSignatoryTitle', next)}
+              value={content.clientSignatoryTitle}
+            />
+          </small>
+        </div>
+      </div>
+    </div>
+  )
+
+  if (showPdfPreview) {
+    return (
+      <div className="page-stack">
+        <button
+          className="text-action back-action no-print"
+          onClick={() => setShowPdfPreview(false)}
+          type="button"
+        >
+          <ChevronLeft size={16} />
+          Back
+        </button>
+        <section className="document-preview single-document">
+          <div className="document-toolbar no-print">
+            <div>
+              <p className="eyebrow">Agreement</p>
+              <h2>{booking.eventName}</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button className="primary-action" onClick={() => window.print()} type="button">
+                <Download size={16} />
+                Print
+              </button>
+            </div>
+          </div>
+          {paperDocument}
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="page-stack">
+      <button
+        className="text-action back-action no-print"
+        onClick={() => runGuarded(onBack)}
+        type="button"
+      >
+        <ChevronLeft size={16} />
+        Back to Agreements
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">
+              Agreement · {agreement.revision > 0 ? `Revision ${agreement.revision}` : 'Draft'} ·{' '}
+              {agreement.status}
+            </p>
+            <h2>{booking.eventName}</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button
+              className="secondary-action"
+              onClick={() => runGuarded(onOpenProposal)}
+              type="button"
+            >
+              <FileText size={16} />
+              Open proposal
+            </button>
+            {canEdit &&
+              (editing ? (
+                <>
+                  <button className="secondary-action" onClick={cancelEditing} type="button">
+                    Cancel
+                  </button>
+                  <button
+                    className="primary-action"
+                    disabled={!isDirty}
+                    onClick={saveEditing}
+                    type="button"
+                  >
+                    <CheckCircle2 size={16} />
+                    Save as revision {agreement.revision + 1}
+                  </button>
+                </>
+              ) : (
+                <button className="primary-action" onClick={startEditing} type="button">
+                  Edit agreement
+                </button>
+              ))}
+            <button
+              className="secondary-action"
+              onClick={() => setShowPdfPreview(true)}
+              type="button"
+            >
+              <Download size={16} />
+              View PDF
+            </button>
+          </div>
+        </div>
+
+        {editing && (
+          <div className="revision-note-field no-print">
+            <label htmlFor="agreement-revision-note">
+              What changed in Revision {agreement.revision + 1}?
+            </label>
+            <input
+              id="agreement-revision-note"
+              onChange={(event) => setRevisionNote(event.target.value)}
+              placeholder="Payment schedule moved to 30/70"
+              value={revisionNote}
+            />
+          </div>
+        )}
+
+        {paperDocument}
+      </section>
+
+      {!editing && (
+        <section className="panel no-print">
+          <PanelHeader
+            detail="The uploaded countersigned file is what unlocks invoicing — not the status flag on its own."
+            title="Signature and signed copy"
+          />
+
+          {signedFile ? (
+            <div className="signed-file-card">
+              <div className="signed-file-head">
+                <FileCheck2 size={20} />
+                <div>
+                  <strong>{signedFile.name}</strong>
+                  <span>
+                    {fileSizeLabel(signedFile.size)} · uploaded by {signedFile.uploadedBy} on{' '}
+                    {signedFile.uploadedAt}
+                  </span>
+                </div>
+                <span className="signed-file-badge">Signed</span>
+              </div>
+
+              <div className="signed-file-preview">
+                {signedFile.type.startsWith('image/') ? (
+                  <img alt={`Signed agreement — ${signedFile.name}`} src={signedFile.dataUrl} />
+                ) : signedFile.type === 'application/pdf' ? (
+                  <iframe src={signedFile.dataUrl} title="Signed agreement" />
+                ) : (
+                  <p className="empty-state">
+                    No inline preview for this file type — download it to view.
+                  </p>
+                )}
+              </div>
+
+              <div className="toolbar-actions">
+                <a
+                  className="secondary-action"
+                  download={signedFile.name}
+                  href={signedFile.dataUrl}
+                >
+                  <Download size={16} />
+                  Download
+                </a>
+                <button className="secondary-action" onClick={onOpenInvoice} type="button">
+                  <ReceiptText size={16} />
+                  Generate invoice
+                </button>
+                {canEdit && (
+                  <button className="text-action danger-action" onClick={onRemoveSignedFile} type="button">
+                    <Trash2 size={14} />
+                    Remove signed copy
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="signed-file-empty">
+              <p>
+                No signed agreement on file. Send the PDF to the client, then upload their
+                countersigned copy here to unlock the invoice.
+              </p>
+              {canEdit && (
+                <div className="toolbar-actions">
+                  <button
+                    className="secondary-action"
+                    disabled={agreement.status !== 'Draft'}
+                    onClick={() => onSetStatus('Sent for signature')}
+                    type="button"
+                  >
+                    <Send size={16} />
+                    {agreement.status === 'Draft' ? 'Mark sent for signature' : 'Sent for signature'}
+                  </button>
+                  <label className="primary-action file-action">
+                    <Upload size={16} />
+                    Upload signed agreement
+                    <input
+                      accept="application/pdf,image/png,image/jpeg"
+                      onChange={(event) => {
+                        handleSignedFile(event.target.files)
+                        event.target.value = ''
+                      }}
+                      type="file"
+                    />
+                  </label>
+                </div>
+              )}
+              {uploadNotice && <p className="form-notice">{uploadNotice}</p>}
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="panel no-print">
+        <PanelHeader
+          detail="Every save cuts a numbered revision. Open one to read the version that was sent."
+          title="Revisions"
+        />
+        <div className="banner-list">
+          {[...agreement.revisions].reverse().map((revision) => (
+            <button
+              className="banner-row"
+              key={revision.id}
+              onClick={() => setViewingRevision(revision)}
+              type="button"
+            >
+              <span className="banner-status">Rev {revision.number}</span>
+              <div className="banner-main">
+                <strong>{revision.note || 'No change note'}</strong>
+                <span>
+                  {revision.savedBy} · {revision.savedAt}
+                </span>
+              </div>
+              <ChevronRight size={16} />
+            </button>
+          ))}
+          {!agreement.revisions.length && (
+            <p>No revisions yet. Editing and saving this agreement records Revision 1.</p>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+/** A past agreement revision, exactly as it was saved. */
+function AgreementRevisionView({
+  onBack,
+  propertyProfile,
+  revision,
+}: {
+  onBack: () => void
+  propertyProfile: PropertyProfile
+  revision: AgreementRevision
+}) {
+  const content = revision.snapshot
+
+  return (
+    <div className="page-stack">
+      <button className="text-action back-action no-print" onClick={onBack} type="button">
+        <ChevronLeft size={16} />
+        Back to agreement
+      </button>
+
+      <section className="document-preview single-document">
+        <div className="document-toolbar no-print">
+          <div>
+            <p className="eyebrow">Agreement · Revision {revision.number} (archived)</p>
+            <h2>{content.agreementNumber}</h2>
+            <p className="panel-header-detail">
+              Saved by {revision.savedBy} on {revision.savedAt}
+              {revision.note ? ` — ${revision.note}` : ''}
+            </p>
+          </div>
+          <div className="toolbar-actions">
+            <button className="primary-action" onClick={() => window.print()} type="button">
+              <Download size={16} />
+              Print
+            </button>
+          </div>
+        </div>
+
+        <div className="paper print-doc agreement-doc">
+          <div className="paper-head">
+            <div>
+              <span>{propertyProfile.name}</span>
+              <strong>EVENT AGREEMENT</strong>
+            </div>
+            <div>
+              <span>{content.agreementNumber}</span>
+              <strong>Revision {revision.number}</strong>
+            </div>
+          </div>
+
+          <div className="paper-grid">
+            <Detail label="Issue date" value={content.issueDate} />
+            <Detail label="Client" value={content.clientName} />
+            <Detail label="TAX ID" value={content.clientTaxId || '—'} />
+            <Detail label="Client address" value={content.clientAddress || '—'} />
+          </div>
+
+          <PaperSection title="The event">
+            <p>{content.eventSummary}</p>
+          </PaperSection>
+
+          <PaperSection title="Contracted services">
+            <LineItemsEditor editable={false} lineItems={content.lineItems} onChange={() => {}} />
+          </PaperSection>
+
+          <PaperSection title="Payment schedule">
+            <ul className="inclusion-list">
+              {content.paymentSchedule.map((term, index) => (
+                <li key={index}>
+                  <Check size={14} />
+                  <span>{term}</span>
+                </li>
+              ))}
+            </ul>
+          </PaperSection>
+
+          <PaperSection title="Cancellation policy">
+            <ul className="inclusion-list">
+              {content.cancellationPolicy.map((term, index) => (
+                <li key={index}>
+                  <Check size={14} />
+                  <span>{term}</span>
+                </li>
+              ))}
+            </ul>
+          </PaperSection>
+
+          <PaperSection title="Terms and conditions">
+            <ol className="ag-clauses">
+              {content.clauses.map((clause) => (
+                <li key={clause.id}>
+                  <strong>{clause.heading}</strong>
+                  <p>{clause.body}</p>
+                </li>
+              ))}
+            </ol>
+          </PaperSection>
+
+          <div className="proposal-signature-row">
+            <div className="signatory-column">
+              <strong>{content.providerSignatory}</strong>
+              <small>
+                {content.providerName} — {content.providerSignatoryTitle}
+              </small>
+            </div>
+            <div className="signatory-column">
+              <strong>{content.clientSignatory}</strong>
+              <small>
+                {content.clientName} — {content.clientSignatoryTitle}
+              </small>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -6142,7 +9593,7 @@ const DEFAULT_UNIT_OPTIONS = [
   'net / 3 hours',
 ]
 
-/** Setup styles seeded from the venues, edited in Settings > Venue & Menu. */
+/** Setup styles seeded from the venues, edited in Settings > Venue. */
 const DEFAULT_SETUP_STYLES = Array.from(
   new Set(initialVenues.flatMap((venue) => venue.setupStyles)),
 ).sort((a, b) => a.localeCompare(b))
@@ -6170,6 +9621,7 @@ function ProductDetailView({
   const [prevCategory, setPrevCategory] = useState(product.category)
   const [addingUnit, setAddingUnit] = useState(false)
   const [prevUnit, setPrevUnit] = useState(product.unit)
+  const [photoNotice, setPhotoNotice] = useState('')
   const isDirty = JSON.stringify(draft) !== JSON.stringify(product)
 
   // Ensure the current value is always selectable even if it isn't in the list.
@@ -6195,6 +9647,29 @@ function ProductDetailView({
   const handleBack = () => {
     if (isDirty && !window.confirm('Discard unsaved changes to this package?')) return
     onBack()
+  }
+
+  // Dish photos are stored inline as data URLs, matching the venue photo
+  // uploader — no file storage bucket needed.
+  const addPhotos = (files: FileList | null) => {
+    if (!files || !files.length) return
+    setPhotoNotice('')
+    Array.from(files).forEach((file) => {
+      if (file.size > 1024 * 1024) {
+        setPhotoNotice(`${file.name} is over 1 MB — choose a smaller photo.`)
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? '')
+        if (!dataUrl) return
+        setDraft((current) => ({ ...current, photos: [...(current.photos ?? []), dataUrl] }))
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+  const removePhoto = (index: number) => {
+    setField('photos', (draft.photos ?? []).filter((_, i) => i !== index))
   }
 
   const handleSave = () => {
@@ -6226,6 +9701,34 @@ function ProductDetailView({
               Delete
             </button>
           )}
+        </div>
+
+        <div className="venue-photo-gallery">
+          {(draft.photos ?? []).map((photo, index) => (
+            <div className="venue-photo" key={index}>
+              <img alt={`${draft.name} ${index + 1}`} src={photo} />
+              <button
+                aria-label={`Remove photo ${index + 1}`}
+                className="venue-photo-remove"
+                onClick={() => removePhoto(index)}
+                type="button"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="venue-photo-add">
+          <input
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            onChange={(event) => addPhotos(event.target.files)}
+            type="file"
+          />
+          <p className="panel-subtitle">
+            Photos under 1 MB each. The first one shows on the Venue card.
+          </p>
+          {photoNotice && <p className="profile-notice">{photoNotice}</p>}
         </div>
 
         <div className="plan-edit-form">
@@ -6742,8 +10245,8 @@ function VenuesView({
     <div className="page-stack">
       <section className="panel">
         <PanelHeader
-          detail="Pick a venue to show its photos and details — ready to present to a client."
-          title="Venue & Menu"
+          detail="Click to show more details"
+          title="Venue"
         />
         <div className="resource-grid">
           {venues.map((venue) => (
@@ -6842,7 +10345,7 @@ function VenueDetailView({
     <div className="page-stack">
       <button className="text-action back-action no-print" onClick={handleBack} type="button">
         <ChevronLeft size={16} />
-        Back to Venue & Menu
+        Back to Venue
       </button>
 
       <section className="panel">
@@ -9831,7 +13334,7 @@ function PackageSettingsPanel({
   )
 }
 
-/** Editor for the venue Setup styles list offered on the Venue & Menu page. */
+/** Editor for the venue Setup styles list offered on the Venue page. */
 function VenueSettingsPanel({
   setSetupStyles,
   setupStyles,
@@ -9840,7 +13343,7 @@ function VenueSettingsPanel({
   setupStyles: string[]
 }) {
   return (
-    <CollapsiblePanel title="Venue & Menu">
+    <CollapsiblePanel title="Venue">
       <p className="panel-subtitle">
         This Setup styles list populates the dropdown when editing a venue. Edit,
         add, or remove options, then Save.
