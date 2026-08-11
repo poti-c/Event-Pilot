@@ -5147,8 +5147,12 @@ function LeadsView({
     <div className="page-stack">
       <section className="panel">
         <PanelHeader
-          action={canCreate ? 'New lead' : undefined}
-          onAction={canCreate ? createLead : undefined}
+          // The topbar's New lead covers the unrestricted list, so the action
+          // here would only duplicate it. On a track-restricted list it still
+          // earns its place: it creates a lead on *that* track, which the
+          // topbar (always BEO) cannot.
+          action={canCreate && restrictToType ? 'New lead' : undefined}
+          onAction={canCreate && restrictToType ? createLead : undefined}
           title={title}
         />
         <ListViewControls
