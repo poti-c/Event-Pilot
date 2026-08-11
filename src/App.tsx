@@ -2319,6 +2319,21 @@ function App() {
     })
   }
 
+  /**
+   * The topbar's primary action. Work starts at a lead, so this is the front
+   * door of the flow; creating a booking outright is the deliberate shortcut
+   * and lives on the Bookings page instead.
+   */
+  const startNewLead = () => {
+    runGuarded(() => {
+      const lead = emptyLead('BEO')
+      setLeads((current) => [lead, ...current])
+      setPulledLeadId(lead.id)
+      setLeadsNavNonce((nonce) => nonce + 1)
+      setActiveModule('Leads')
+    })
+  }
+
   // Vendor console sign-in (see src/consoleClient.ts). Separate credentials,
   // separate token, no Supabase Auth involvement.
   const handleConsoleLogin = async (
@@ -2596,18 +2611,34 @@ function App() {
               <Bell size={18} />
               {notificationItems.length > 0 && <span>{notificationItems.length}</span>}
             </button>
-            {hasPermission(loginSession.role, 'booking:create') && (
+            {hasPermission(loginSession.role, 'leads:create') ? (
               <a
                 className="primary-action"
-                href="#NewBooking"
+                href="#Leads"
                 onClick={(event) => {
                   event.preventDefault()
-                  openNewBooking()
+                  startNewLead()
                 }}
               >
                 <Plus size={17} />
-                New booking
+                New lead
               </a>
+            ) : (
+              // No lead rights but can still book? Keep the old shortcut here
+              // rather than leaving them with no primary action at all.
+              hasPermission(loginSession.role, 'booking:create') && (
+                <a
+                  className="primary-action"
+                  href="#NewBooking"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    openNewBooking()
+                  }}
+                >
+                  <Plus size={17} />
+                  New booking
+                </a>
+              )
             )}
           </div>
           {notificationsOpen && (
@@ -2737,6 +2768,7 @@ function App() {
               account={loginSession}
               bookings={filteredBookings}
               closeJob={closeJob}
+              onNewBooking={openNewBooking}
               onViewBeo={(bookingId) => {
                 setActiveModule('BEOs')
                 setBeoViewBookingId(bookingId)
@@ -6695,6 +6727,7 @@ function BookingsView({
   account,
   bookings,
   closeJob,
+  onNewBooking,
   onViewBeo,
   reopenJob,
   selectedBookingId,
@@ -6706,6 +6739,7 @@ function BookingsView({
   account: LoginSession
   bookings: EventBooking[]
   closeJob: (bookingId: string, closure: JobClosure) => void
+  onNewBooking: () => void
   onViewBeo: (bookingId: string) => void
   reopenJob: (bookingId: string) => void
   selectedBookingId?: string
@@ -6719,6 +6753,7 @@ function BookingsView({
 }) {
   const canAdvance = hasPermission(account.role, 'booking:advanceStatus')
   const canFallBack = hasPermission(account.role, 'booking:fallBackStatus')
+  const canCreateBooking = hasPermission(account.role, 'booking:create')
   const bookingDisplayLimit = 6
   const [showAllBookings, setShowAllBookings] = useState(false)
   const selectedBooking =
@@ -6739,6 +6774,12 @@ function BookingsView({
   return (
     <div className="bookings-layout">
       <section className="panel">
+        <PanelHeader
+          action={canCreateBooking ? 'New booking' : undefined}
+          detail="Most bookings arrive by converting a lead. Create one here only when there is no lead to work from."
+          onAction={canCreateBooking ? onNewBooking : undefined}
+          title="Bookings"
+        />
         <FilterBar setStatusFilter={handleStatusFilter} statusFilter={statusFilter} />
         <div className="booking-table">
           {displayedBookings.map((booking) => (
