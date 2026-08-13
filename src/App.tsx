@@ -862,6 +862,7 @@ function filterAndSortByTime<T>(
 function ListViewControls({
   availableMonths,
   availableYears,
+  extraControls,
   selectedMonth,
   selectedYear,
   setSelectedMonth,
@@ -873,6 +874,9 @@ function ListViewControls({
 }: {
   availableMonths: string[]
   availableYears: string[]
+  // Sits between the time filter and the view toggle — e.g. the Leads
+  // BEO / Group Resume track filter.
+  extraControls?: ReactNode
   selectedMonth: string
   selectedYear: string
   setSelectedMonth: (month: string) => void
@@ -914,6 +918,7 @@ function ListViewControls({
           </select>
         )}
       </div>
+      {extraControls}
       <div className="view-toggle">
         <button
           aria-label="Grid view"
@@ -934,6 +939,31 @@ function ListViewControls({
           <List size={16} />
         </button>
       </div>
+    </div>
+  )
+}
+
+// BEO / Group Resume track filter, shared by the Leads, Proposals, Invoices,
+// and Agreements lists.
+function LeadTypeFilter({
+  onChange,
+  value,
+}: {
+  onChange: (next: LeadType | 'All') => void
+  value: LeadType | 'All'
+}) {
+  return (
+    <div className="segmented-control">
+      {(['All', 'BEO', 'Group Resume'] as Array<LeadType | 'All'>).map((mode) => (
+        <button
+          className={value === mode ? 'segment active' : 'segment'}
+          key={mode}
+          onClick={() => onChange(mode)}
+          type="button"
+        >
+          {mode === 'All' ? 'All types' : mode === 'BEO' ? 'BEOs' : 'Group Resume'}
+        </button>
+      ))}
     </div>
   )
 }
@@ -1636,6 +1666,8 @@ function App() {
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
   // null = show the list; a booking id = show that document's detail with a back button.
   const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
+  // A group-track booking opens its resume instead of a BEO.
+  const [groupResumeBookingId, setGroupResumeBookingId] = useState<string | null>(null)
   const [proposalViewBookingId, setProposalViewBookingId] = useState<string | null>(null)
   const [invoiceViewBookingId, setInvoiceViewBookingId] = useState<string | null>(null)
   const [agreementViewBookingId, setAgreementViewBookingId] = useState<string | null>(null)
@@ -2479,6 +2511,7 @@ function App() {
       if (id === 'BEOs') setBeoViewBookingId(null)
       if (id === 'Proposals') setProposalViewBookingId(null)
       if (id === 'Invoices') setInvoiceViewBookingId(null)
+      if (id === 'Agreements') setAgreementViewBookingId(null)
       // Packages and Leads keep their open-item state inside their own view,
       // so bump a nonce to remount — clicking the nav returns to the list
       // instead of a stale detail.
@@ -2487,8 +2520,21 @@ function App() {
         setLeadsNavNonce((nonce) => nonce + 1)
         setPulledLeadId(null)
         setOpenLeadDraft(false)
+        setGroupResumeBookingId(null)
       }
     })
+  }
+
+  // "View BEO" on a group-track booking is really "View Group Resume".
+  const openBookingDocument = (bookingId: string) => {
+    const booking = bookings.find((entry) => entry.id === bookingId)
+    if (booking && bookingLeadTypeOf(booking) === 'Group Resume') {
+      setGroupResumeBookingId(bookingId)
+      setActiveModule('GroupResume')
+      return
+    }
+    setActiveModule('BEOs')
+    setBeoViewBookingId(bookingId)
   }
 
   const handleLogout = () => {
@@ -2729,10 +2775,7 @@ function App() {
           {activeModule === 'Calendar' && (
             <CalendarView
               bookings={filteredBookings}
-              onViewBeo={(bookingId) => {
-                setActiveModule('BEOs')
-                setBeoViewBookingId(bookingId)
-              }}
+              onViewBeo={openBookingDocument}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
               setStatusFilter={setStatusFilter}
@@ -2755,9 +2798,13 @@ function App() {
           {activeModule === 'GroupResume' && (
             <GroupResumeView
               account={loginSession}
+              acknowledgeDepartment={acknowledgeDepartment}
+              appendBeoHistory={appendBeoHistory}
               bookings={bookings}
+              departments={departments}
               initialLeadId={pulledLeadId}
-              key={leadsNavNonce}
+              initialResumeBookingId={groupResumeBookingId}
+              key={`${leadsNavNonce}-${groupResumeBookingId ?? ''}`}
               leads={leads}
               onConvert={convertLead}
               onOpenBooking={(bookingId) => {
@@ -2766,7 +2813,9 @@ function App() {
               }}
               onSaveResume={updateBookingGroupResume}
               propertyProfile={propertyProfile}
+              session={loginSession}
               setLeads={setLeads}
+              submitDepartmentInstruction={submitDepartmentInstruction}
             />
           )}
 
@@ -2785,10 +2834,7 @@ function App() {
               bookings={filteredBookings}
               closeJob={closeJob}
               onNewBooking={openNewBooking}
-              onViewBeo={(bookingId) => {
-                setActiveModule('BEOs')
-                setBeoViewBookingId(bookingId)
-              }}
+              onViewBeo={openBookingDocument}
               reopenJob={reopenJob}
               selectedBookingId={selectedBooking?.id}
               setSelectedBookingId={setSelectedBookingId}
@@ -4536,7 +4582,11 @@ function CalendarView({
       {selectedBooking && (
         <section className="panel calendar-selection">
           <PanelHeader
-            action="View BEO"
+            action={
+              bookingLeadTypeOf(selectedBooking) === 'Group Resume'
+                ? 'View Group Resume'
+                : 'View BEO'
+            }
             onAction={() => onViewBeo(selectedBooking.id)}
             title={selectedBooking.eventName}
           />
@@ -5111,13 +5161,20 @@ function LeadsView({
   const [selectedYear, setSelectedYear] = useState(
     () => availableYears[availableYears.length - 1] ?? '',
   )
-  const visibleLeads = filterAndSortByTime(
+  // Only offered on the unrestricted Leads page — the Group Resume page is
+  // already scoped to one track.
+  const [typeFilter, setTypeFilter] = useState<LeadType | 'All'>('All')
+  const timeFilteredLeads = filterAndSortByTime(
     scopedLeads,
     getLeadDate,
     timeFilter,
     selectedMonth,
     selectedYear,
   )
+  const visibleLeads =
+    restrictToType || typeFilter === 'All'
+      ? timeFilteredLeads
+      : timeFilteredLeads.filter((lead) => leadTypeOf(lead) === typeFilter)
 
   const actorName = account.displayName.trim() || account.email || 'A team member'
 
@@ -5249,6 +5306,11 @@ function LeadsView({
         <ListViewControls
           availableMonths={availableMonths}
           availableYears={availableYears}
+          extraControls={
+            restrictToType ? undefined : (
+              <LeadTypeFilter onChange={setTypeFilter} value={typeFilter} />
+            )
+          }
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
           setSelectedMonth={setSelectedMonth}
@@ -5344,26 +5406,45 @@ function LeadsView({
 
 function GroupResumeView({
   account,
+  acknowledgeDepartment,
+  appendBeoHistory,
   bookings,
+  departments,
   initialLeadId,
+  initialResumeBookingId,
   leads,
   onConvert,
   onOpenBooking,
   onSaveResume,
   propertyProfile,
+  session,
   setLeads,
+  submitDepartmentInstruction,
 }: {
   account: LoginSession
+  acknowledgeDepartment: (bookingId: string, dept: BeoDepartment, by: string) => void
+  appendBeoHistory: (bookingId: string, note: string) => void
   bookings: EventBooking[]
+  departments: BeoDepartment[]
   initialLeadId?: string | null
+  // Opens straight onto this booking's resume — used by a booking's
+  // View Group Resume action.
+  initialResumeBookingId?: string | null
   leads: Lead[]
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
   onOpenBooking: (bookingId: string) => void
   onSaveResume: (bookingId: string, resume: GroupResume) => void
   propertyProfile: PropertyProfile
+  session: LoginSession
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
+  submitDepartmentInstruction: (
+    bookingId: string,
+    dept: BeoDepartment,
+    text: string,
+    by: string,
+  ) => void
 }) {
-  const [openResumeId, setOpenResumeId] = useState<string | null>(null)
+  const [openResumeId, setOpenResumeId] = useState<string | null>(initialResumeBookingId ?? null)
   const groupBookings = bookings
     .filter((booking) => bookingLeadTypeOf(booking) === 'Group Resume')
     .sort((first, second) => first.date.localeCompare(second.date))
@@ -5372,13 +5453,18 @@ function GroupResumeView({
   if (openBooking) {
     return (
       <GroupResumeDocumentView
+        acknowledgeDepartment={acknowledgeDepartment}
+        appendHistory={appendBeoHistory}
         booking={openBooking}
         canEdit={hasPermission(account.role, 'proposal:edit')}
+        departments={departments}
         key={openBooking.id}
         onBack={() => setOpenResumeId(null)}
         onOpenBooking={() => onOpenBooking(openBooking.id)}
         onSave={(resume) => onSaveResume(openBooking.id, resume)}
         propertyProfile={propertyProfile}
+        session={session}
+        submitDepartmentInstruction={submitDepartmentInstruction}
       />
     )
   }
@@ -5650,19 +5736,34 @@ function GrList({
 }
 
 function GroupResumeDocumentView({
+  acknowledgeDepartment,
+  appendHistory,
   booking,
   canEdit,
+  departments,
   onBack,
   onOpenBooking,
   onSave,
   propertyProfile,
+  session,
+  submitDepartmentInstruction,
 }: {
+  acknowledgeDepartment: (bookingId: string, dept: BeoDepartment, by: string) => void
+  appendHistory: (bookingId: string, note: string) => void
   booking: EventBooking
   canEdit: boolean
+  departments: BeoDepartment[]
   onBack: () => void
   onOpenBooking: () => void
   onSave: (resume: GroupResume) => void
   propertyProfile: PropertyProfile
+  session: LoginSession
+  submitDepartmentInstruction: (
+    bookingId: string,
+    dept: BeoDepartment,
+    text: string,
+    by: string,
+  ) => void
 }) {
   // Built once per mount (the caller keys this view by booking id) so the
   // unsaved fallback keeps a stable identity across renders.
@@ -5697,8 +5798,94 @@ function GroupResumeDocumentView({
   const saveEditing = () => {
     // Every save is a numbered revision, matching proposals and agreements.
     onSave({ ...draft, revision: saved.revision + 1, updated: saved.revision > 0 })
+    appendHistory(booking.id, `Group resume saved as Revision ${saved.revision + 1}`)
     setEditing(false)
   }
+  // Bumps the revision without touching content — the BEO's Mark revised, for
+  // when the resume is redistributed after an off-document change.
+  const markRevised = () => {
+    onSave({ ...saved, revision: saved.revision + 1, updated: saved.revision > 0 })
+    appendHistory(booking.id, `Group resume marked as Revision ${saved.revision + 1}`)
+  }
+
+  /* ---- control panels, mirroring the BEO's ---- */
+  const isDepartmentViewer = session.role === 'beo_viewer'
+  const canEditInstructions = hasPermission(session.role, 'proposal:edit')
+  const viewerName = session.displayName.trim() || 'Department user'
+  // Configured departments plus any this booking already has data for, so a
+  // Settings change never hides an existing sign-off.
+  const bookingDepartments = Array.from(
+    new Set([
+      ...departments,
+      ...Object.keys(booking.departmentInstructions ?? {}),
+      ...Object.keys(booking.departmentAcks ?? {}),
+      ...(booking.departmentMessages ?? []).map((message) => message.department),
+    ]),
+  )
+  const resumeHistory = [...(booking.beoHistory ?? [])].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  )
+  const itineraryItemCount = resume.days.reduce(
+    (total, day) => total + day.items.filter((item) => item.detail.trim()).length,
+    0,
+  )
+  const readinessItems = [
+    {
+      label: 'Group and organizer',
+      detail: `${resume.groupName || 'Group name missing'}; organizer ${resume.organizer || 'not set'}.`,
+      ready: Boolean(resume.groupName.trim() && resume.organizer.trim()),
+    },
+    {
+      label: 'Group leader contact',
+      detail: `${resume.leaderName || 'No leader named'}; ${resume.leaderPhone || 'no phone'}.`,
+      ready: Boolean(resume.leaderName.trim() && (resume.leaderPhone.trim() || resume.leaderEmail.trim())),
+    },
+    {
+      label: 'Stay dates',
+      detail: `Check-in ${resume.checkIn || '—'}, check-out ${resume.checkOut || '—'}.`,
+      ready: Boolean(resume.checkIn.trim() && resume.checkOut.trim()),
+    },
+    {
+      label: 'Group size and rooms',
+      detail: `${resume.groupSize || 'Size not set'}; ${resume.roomCount || 'room count not set'}.`,
+      ready: Boolean(resume.groupSize.trim() && resume.roomCount.trim()),
+    },
+    {
+      label: 'Itinerary',
+      detail: `${resume.days.length} day(s) with ${itineraryItemCount} scheduled item(s).`,
+      ready: resume.days.length > 0 && itineraryItemCount > 0,
+    },
+    {
+      label: 'Rooming list',
+      detail: `${resume.guests.length} guest row(s) listed.`,
+      ready: resume.guests.length > 0,
+    },
+    {
+      label: 'Room rate and benefits',
+      detail: `${resume.roomRate || 'Rate not set'}; ${resume.roomBenefits.length} inclusion(s).`,
+      ready: Boolean(resume.roomRate.trim()) && resume.roomBenefits.length > 0,
+    },
+    {
+      label: 'Functions',
+      detail: `${resume.functions.length} function(s) scheduled.`,
+      ready: resume.functions.length > 0,
+    },
+    {
+      label: 'Revenue and billing',
+      detail: `${resume.revenueRows.length} revenue line(s); ${resume.billingInstructions.length} billing instruction(s).`,
+      ready: resume.revenueRows.length > 0 && resume.billingInstructions.length > 0,
+    },
+    {
+      label: 'Live revisions',
+      detail:
+        resume.revision > 0
+          ? `Revision ${resume.revision}; local updates are tracked before PDF/share.`
+          : 'Still a draft — save a revision before distributing.',
+      ready: resume.revision > 0,
+    },
+  ]
+  const readyCount = readinessItems.filter((item) => item.ready).length
+  const readinessPercent = Math.round((readyCount / readinessItems.length) * 100)
 
   /* ---- itinerary ---- */
   const updateDay = (dayId: string, patch: Partial<GroupResumeDay>) =>
@@ -6492,7 +6679,14 @@ function GroupResumeDocumentView({
               <h2>{booking.eventName}</h2>
             </div>
             <div className="toolbar-actions">
-              <button className="primary-action" onClick={() => window.print()} type="button">
+              <button
+                className="primary-action"
+                onClick={() => {
+                  appendHistory(booking.id, 'Group resume printed / exported as PDF')
+                  window.print()
+                }}
+                type="button"
+              >
                 <Download size={16} />
                 Print
               </button>
@@ -6524,6 +6718,24 @@ function GroupResumeDocumentView({
               <ClipboardList size={16} />
               Open booking
             </button>
+            <button
+              className="secondary-action"
+              onClick={() =>
+                shareDocument(
+                  {
+                    title: `Group resume — ${booking.eventName}`,
+                    text: `Group resume ${
+                      resume.revision > 0 ? `Rev ${resume.revision}` : '(draft)'
+                    } — ${booking.eventName}, ${resume.checkIn || booking.date} at ${booking.venue}.`,
+                  },
+                  () => appendHistory(booking.id, 'Group resume summary copied to clipboard'),
+                )
+              }
+              type="button"
+            >
+              <Send size={16} />
+              Share
+            </button>
             {canEdit &&
               (editing ? (
                 <>
@@ -6536,7 +6748,7 @@ function GroupResumeDocumentView({
                   </button>
                 </>
               ) : (
-                <button className="primary-action" onClick={startEditing} type="button">
+                <button className="secondary-action" onClick={startEditing} type="button">
                   Edit resume
                 </button>
               ))}
@@ -6548,10 +6760,98 @@ function GroupResumeDocumentView({
               <Download size={16} />
               View PDF
             </button>
+            {canEdit && !editing && (
+              <button className="primary-action" onClick={markRevised} type="button">
+                <RefreshCcw size={16} />
+                Mark revised
+              </button>
+            )}
           </div>
         </div>
 
+        <section className="beo-control-panel no-print">
+          <div className="beo-readiness-head">
+            <div>
+              <p className="eyebrow">Operational readiness</p>
+              <h3>
+                {readyCount}/{readinessItems.length} group resume controls complete
+              </h3>
+            </div>
+            <strong>{readinessPercent}%</strong>
+          </div>
+          <div className="progress-track">
+            <span style={{ width: `${readinessPercent}%` }} />
+          </div>
+          <div className="beo-readiness-grid">
+            {readinessItems.map((item) => (
+              <div
+                className={item.ready ? 'readiness-item ready' : 'readiness-item'}
+                key={item.label}
+              >
+                <CheckCircle2 size={16} />
+                <div>
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="beo-control-panel beo-departments no-print">
+          <div className="beo-readiness-head">
+            <div>
+              <p className="eyebrow">Department instructions</p>
+              <h3>
+                {isDepartmentViewer
+                  ? `${session.department} sign-off`
+                  : 'Sign-off by responsible department'}
+              </h3>
+            </div>
+            <strong>
+              {bookingDepartments.filter((dept) => booking.departmentAcks?.[dept]).length}/
+              {bookingDepartments.length} acknowledged
+            </strong>
+          </div>
+          <div className="department-instruction-list">
+            {bookingDepartments.map((dept) => (
+              <DepartmentInstructionCard
+                ack={booking.departmentAcks?.[dept]}
+                canEdit={canEditInstructions}
+                department={dept}
+                instruction={booking.departmentInstructions?.[dept] ?? ''}
+                isMine={isDepartmentViewer && session.department === dept}
+                key={dept}
+                messages={(booking.departmentMessages ?? []).filter(
+                  (message) => message.department === dept,
+                )}
+                onAcknowledge={() => acknowledgeDepartment(booking.id, dept, viewerName)}
+                onSubmit={(text) => submitDepartmentInstruction(booking.id, dept, text, viewerName)}
+              />
+            ))}
+          </div>
+        </section>
+
         {paperDocument}
+      </section>
+
+      <section className="panel no-print">
+        <PanelHeader title="History" />
+        <div className="timeline">
+          {resumeHistory.length ? (
+            resumeHistory.map((entry) => (
+              <div className="timeline-entry" key={entry.id}>
+                <span className="timeline-dot" />
+                <div>
+                  <strong>{entry.note}</strong>
+                  <span>{entry.timestamp}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p>No history recorded yet.</p>
+          )}
+        </div>
       </section>
     </div>
   )
@@ -6957,7 +7257,9 @@ function BookingsView({
               type="button"
             >
               <ClipboardList size={17} />
-              View BEO
+              {bookingLeadTypeOf(selectedBooking) === 'Group Resume'
+                ? 'View Group Resume'
+                : 'View BEO'}
             </button>
           </div>
 
@@ -8057,13 +8359,19 @@ function DocumentsListView({
   const [selectedYear, setSelectedYear] = useState(
     () => availableYears[availableYears.length - 1] ?? '',
   )
-  const visibleBookings = filterAndSortByTime(
+  // Same BEO / Group Resume track filter the Leads list uses.
+  const [typeFilter, setTypeFilter] = useState<LeadType | 'All'>('All')
+  const timeFilteredBookings = filterAndSortByTime(
     bookings,
     getBookingDate,
     timeFilter,
     selectedMonth,
     selectedYear,
   )
+  const visibleBookings =
+    typeFilter === 'All'
+      ? timeFilteredBookings
+      : timeFilteredBookings.filter((booking) => bookingLeadTypeOf(booking) === typeFilter)
 
   return (
     <div className="page-stack">
@@ -8072,6 +8380,7 @@ function DocumentsListView({
         <ListViewControls
           availableMonths={availableMonths}
           availableYears={availableYears}
+          extraControls={<LeadTypeFilter onChange={setTypeFilter} value={typeFilter} />}
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
           setSelectedMonth={setSelectedMonth}
@@ -8792,8 +9101,15 @@ function AgreementsListView({
   bookings: EventBooking[]
   onSelect: (bookingId: string) => void
 }) {
-  const withAgreement = bookings.filter((booking) => booking.agreement)
-  const withoutAgreement = bookings.filter((booking) => !booking.agreement)
+  // Same BEO / Group Resume track filter the other document lists use; it
+  // scopes both panels below.
+  const [typeFilter, setTypeFilter] = useState<LeadType | 'All'>('All')
+  const scopedBookings =
+    typeFilter === 'All'
+      ? bookings
+      : bookings.filter((booking) => bookingLeadTypeOf(booking) === typeFilter)
+  const withAgreement = scopedBookings.filter((booking) => booking.agreement)
+  const withoutAgreement = scopedBookings.filter((booking) => !booking.agreement)
 
   return (
     <div className="page-stack">
@@ -8802,6 +9118,9 @@ function AgreementsListView({
           detail="Generated from an agreed proposal, then revised until both sides sign."
           title="Agreements"
         />
+        <div className="list-controls">
+          <LeadTypeFilter onChange={setTypeFilter} value={typeFilter} />
+        </div>
         <div className="banner-list">
           {withAgreement.map((booking) => {
             const agreement = booking.agreement!
