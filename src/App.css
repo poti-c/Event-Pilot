@@ -5720,8 +5720,26 @@ button.opportunity-card {
   color: var(--danger);
 }
 
+/* Manual company name + its "Add to CRM" action, on one row. */
+.lead-company-manual {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.lead-company-manual input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.lead-company-manual .secondary-action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 @media (max-width: 760px) {
-  .chip-field-add {
+  .chip-field-add,
+  .lead-company-manual {
     flex-direction: column;
   }
 }

@@ -2813,10 +2813,12 @@ function App() {
           {activeModule === 'Leads' && (
             <LeadsView
               account={loginSession}
+              accounts={accounts}
               initialLeadId={pulledLeadId}
               key={`${leadsNavNonce}-${leadDraftNonce}`}
               leads={leads}
               onConvert={convertLead}
+              onCreateAccount={createAccount}
               setLeads={setLeads}
               startDraft={openLeadDraft}
             />
@@ -2825,6 +2827,7 @@ function App() {
           {activeModule === 'GroupResume' && (
             <GroupResumeView
               account={loginSession}
+              accounts={accounts}
               acknowledgeDepartment={acknowledgeDepartment}
               appendBeoHistory={appendBeoHistory}
               bookings={bookings}
@@ -2834,6 +2837,7 @@ function App() {
               key={`${leadsNavNonce}-${groupResumeBookingId ?? ''}`}
               leads={leads}
               onConvert={convertLead}
+              onCreateAccount={createAccount}
               onOpenBooking={(bookingId) => {
                 setSelectedBookingId(bookingId)
                 setActiveModule('Bookings')
@@ -4766,13 +4770,19 @@ function emptyLead(leadType: LeadType = 'BEO'): Lead {
   }
 }
 
+/** The lead fields a CRM profile can fill in. Shared by the CRM pull-in and the
+ * company picker on the lead form, so both carry across exactly the same set. */
+type AccountLeadFields = Pick<
+  Lead,
+  'name' | 'company' | 'email' | 'phone' | 'source' | 'category' | 'estimatedValue' | 'notes'
+>
+
 /**
- * Pull a CRM customer profile into a new lead. Everything the profile already
- * knows is carried across so nobody re-types a known client; the notes field
- * gets the qualifying context (budget, venue, behaviour) rather than losing it.
+ * Everything a customer profile already knows, shaped for a lead, so nobody
+ * re-types a known client; the notes field gets the qualifying context (budget,
+ * venue, behaviour) rather than losing it.
  */
-function leadFromAccount(account: Account, leadType: LeadType, owner: string): Lead {
-  const base = emptyLead(leadType)
+function accountLeadFields(account: Account): AccountLeadFields {
   // Past average spend is a better opening estimate than zero for a repeat
   // client; a first-time profile has no events and keeps 0.
   const averageSpend =
@@ -4792,7 +4802,6 @@ function leadFromAccount(account: Account, leadType: LeadType, owner: string): L
     .join('\n')
 
   return {
-    ...base,
     name: account.contact || account.name,
     company: account.name,
     email: account.email,
@@ -4800,8 +4809,16 @@ function leadFromAccount(account: Account, leadType: LeadType, owner: string): L
     source: account.leadSource,
     category: account.preferredPackages[0] ?? '',
     estimatedValue: averageSpend,
-    owner,
     notes,
+  }
+}
+
+/** Pull a CRM customer profile into a new lead. */
+function leadFromAccount(account: Account, leadType: LeadType, owner: string): Lead {
+  return {
+    ...emptyLead(leadType),
+    ...accountLeadFields(account),
+    owner,
     history: [
       {
         id: `HIST-${Date.now()}`,
@@ -4812,21 +4829,163 @@ function leadFromAccount(account: Account, leadType: LeadType, owner: string): L
   }
 }
 
+/** A minimal CRM profile built from what a lead already captured, used by the
+ * lead form's "Add to CRM" action for a company that has no profile yet. */
+function accountFromLead(lead: Lead, id: string): Account {
+  return {
+    id,
+    name: lead.company.trim(),
+    type: 'Corporate',
+    contact: lead.name.trim(),
+    email: lead.email.trim(),
+    phone: lead.phone.trim(),
+    totalRevenue: 0,
+    events: 0,
+    preferredVenue: '',
+    preferredPackages: [],
+    dietary: [],
+    budgetRange: '',
+    behavior: '',
+    leadSource: lead.source.trim(),
+    notes: `Created from lead ${lead.id}.`,
+    createdAt: toDateKey(new Date()),
+  }
+}
+
+/** Sentinel for "this company has no CRM profile" in the company dropdown. */
+const COMPANY_NOT_IN_CRM = '__not_in_crm__'
+
+/**
+ * The lead's company, picked from the CRM rather than typed. Choosing a profile
+ * carries its details onto the lead; choosing "Not in the CRM" falls back to a
+ * free-text name, which can then be registered as a profile on the spot.
+ */
+function LeadCompanyField({
+  accounts,
+  canCreateProfile,
+  lead,
+  onAddToCrm,
+  onApply,
+}: {
+  accounts: Account[]
+  canCreateProfile: boolean
+  lead: Lead
+  onAddToCrm: () => void
+  onApply: (patch: Partial<Lead>) => void
+}) {
+  const matched = accounts.find((account) => account.name === lead.company)
+  // An existing lead may already name a company that never had a profile; it
+  // opens on the manual branch rather than silently losing the name.
+  const [manual, setManual] = useState(Boolean(lead.company) && !matched)
+  const sorted = [...accounts].sort((first, second) => first.name.localeCompare(second.name))
+  const typedName = lead.company.trim()
+  const canRegister =
+    canCreateProfile &&
+    manual &&
+    typedName.length > 0 &&
+    !accounts.some((account) => account.name.trim().toLowerCase() === typedName.toLowerCase())
+
+  const selectCompany = (value: string) => {
+    if (value === COMPANY_NOT_IN_CRM) {
+      setManual(true)
+      onApply({ company: '' })
+      return
+    }
+    setManual(false)
+    const account = accounts.find((entry) => entry.name === value)
+    if (!account) {
+      onApply({ company: '' })
+      return
+    }
+    onApply(accountLeadFields(account))
+  }
+
+  return (
+    <>
+      <FormField
+        hint={
+          matched
+            ? `Details carried across from ${matched.id}. Edit anything that differs for this event.`
+            : 'Pick the customer from the CRM so their details fill in automatically.'
+        }
+        label="Company"
+      >
+        <select
+          onChange={(event) => selectCompany(event.target.value)}
+          value={manual ? COMPANY_NOT_IN_CRM : matched?.name ?? ''}
+        >
+          <option value="">Select a company…</option>
+          {sorted.map((account) => (
+            <option key={account.id} value={account.name}>
+              {account.name}
+            </option>
+          ))}
+          <option value={COMPANY_NOT_IN_CRM}>Not in the CRM — enter manually</option>
+        </select>
+      </FormField>
+
+      {manual && (
+        <FormField
+          hint={
+            canRegister
+              ? 'No CRM profile for this company yet.'
+              : typedName && !canCreateProfile
+                ? 'Ask a manager to add this company to the CRM.'
+                : undefined
+          }
+          label="Company name"
+        >
+          <div className="lead-company-manual">
+            <input
+              autoFocus
+              onChange={(event) => onApply({ company: event.target.value })}
+              placeholder="Company, family, or group"
+              value={lead.company}
+            />
+            {canRegister && (
+              <button
+                className="secondary-action"
+                // The company now has a profile, so the picker leaves the
+                // manual branch and shows it as the linked CRM customer.
+                onClick={() => {
+                  onAddToCrm()
+                  setManual(false)
+                }}
+                type="button"
+              >
+                <Plus size={15} />
+                Add to CRM
+              </button>
+            )}
+          </div>
+        </FormField>
+      )}
+    </>
+  )
+}
+
 function LeadDetailView({
+  accounts,
+  applyLead,
   canConvert,
+  canCreateProfile,
   canDelete,
   canEdit,
   isNew = false,
   lead,
   onBack,
   onConvert,
+  onCreateAccount,
   onDelete,
   onDiscardNew,
   onLogFollowUp,
   onSaveNew,
   updateLead,
 }: {
+  accounts: Account[]
+  applyLead: (id: string, patch: Partial<Lead>) => void
   canConvert: boolean
+  canCreateProfile: boolean
   canDelete: boolean
   canEdit: boolean
   // An unsaved draft: nothing exists in the lead list until Save is clicked,
@@ -4835,6 +4994,7 @@ function LeadDetailView({
   lead: Lead
   onBack: () => void
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
+  onCreateAccount: (account: Account) => void
   onDelete: (id: string) => void
   onDiscardNew?: () => void
   onLogFollowUp: (note: string) => void
@@ -4856,6 +5016,17 @@ function LeadDetailView({
 
   const saveStage = () => {
     if (hasStageChange) updateLead(lead.id, 'stage', draftStage)
+  }
+
+  /**
+   * Register the manually typed company in the CRM from what the lead already
+   * has, then re-point the lead at the new profile so the picker shows it.
+   */
+  const addCompanyToCrm = () => {
+    const account = accountFromLead(lead, nextAccountId(accounts))
+    if (!account.name) return
+    onCreateAccount(account)
+    applyLead(lead.id, { company: account.name })
   }
 
   // Called before any action that would otherwise discard a staged status change.
@@ -5027,16 +5198,17 @@ function LeadDetailView({
 
         {isEditing ? (
           <div className="plan-edit-form">
+            <LeadCompanyField
+              accounts={accounts}
+              canCreateProfile={canCreateProfile}
+              lead={lead}
+              onAddToCrm={addCompanyToCrm}
+              onApply={(patch) => applyLead(lead.id, patch)}
+            />
             <FormField label="Contact name">
               <input
                 onChange={(event) => updateLead(lead.id, 'name', event.target.value)}
                 value={lead.name}
-              />
-            </FormField>
-            <FormField label="Company">
-              <input
-                onChange={(event) => updateLead(lead.id, 'company', event.target.value)}
-                value={lead.company}
               />
             </FormField>
             <FormField label="Email">
@@ -5240,22 +5412,26 @@ function LeadDetailView({
 
 function LeadsView({
   account,
+  accounts,
   initialLeadId,
   leads,
   listFooter,
   onConvert,
+  onCreateAccount,
   restrictToType,
   setLeads,
   startDraft = false,
   title = 'Leads',
 }: {
   account: LoginSession
+  accounts: Account[]
   // Opens straight onto this lead — used when arriving from a CRM pull-in.
   initialLeadId?: string | null
   leads: Lead[]
   // Rendered under the list, and hidden while a lead detail is open.
   listFooter?: ReactNode
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
+  onCreateAccount: (account: Account) => void
   // When set, the view only shows leads on that track.
   restrictToType?: LeadType
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
@@ -5274,6 +5450,7 @@ function LeadsView({
   const canEdit = hasPermission(account.role, 'leads:edit')
   const canConvert = hasPermission(account.role, 'booking:create')
   const canDelete = hasPermission(account.role, 'leads:delete')
+  const canCreateProfile = hasPermission(account.role, 'crm:createProfile')
   const getLeadDate = (lead: Lead) => lead.createdAt
   const availableMonths = availableMonthsOf(scopedLeads, getLeadDate)
   const availableYears = availableYearsOf(scopedLeads, getLeadDate)
@@ -5322,6 +5499,16 @@ function LeadsView({
     )
   }
 
+  /** Multi-field edit — used by the company picker, which fills several lead
+   * fields from one CRM profile in a single update. */
+  const applyLead = (id: string, patch: Partial<Lead>) => {
+    setLeads((current) =>
+      current.map((lead) =>
+        lead.id === id ? { ...lead, ...patch, updatedAt: toDateKey(new Date()) } : lead,
+      ),
+    )
+  }
+
   const logFollowUp = (id: string, note: string) => {
     const trimmed = note.trim()
     if (!trimmed) return
@@ -5361,6 +5548,10 @@ function LeadsView({
     setDraftLead((current) => (current ? { ...current, [field]: value } : current))
   }
 
+  const applyDraft = (_id: string, patch: Partial<Lead>) => {
+    setDraftLead((current) => (current ? { ...current, ...patch } : current))
+  }
+
   const saveDraft = () => {
     if (!draftLead) return
     const named = { ...draftLead, name: draftLead.name.trim() || 'Untitled lead' }
@@ -5385,13 +5576,17 @@ function LeadsView({
   if (draftLead) {
     return (
       <LeadDetailView
+        accounts={accounts}
+        applyLead={applyDraft}
         canConvert={false}
+        canCreateProfile={canCreateProfile}
         canDelete={false}
         canEdit
         isNew
         lead={draftLead}
         onBack={discardDraft}
         onConvert={onConvert}
+        onCreateAccount={onCreateAccount}
         onDelete={() => setDraftLead(null)}
         onDiscardNew={discardDraft}
         onLogFollowUp={() => {}}
@@ -5406,13 +5601,17 @@ function LeadsView({
   if (selectedLead) {
     return (
       <LeadDetailView
+        accounts={accounts}
+        applyLead={applyLead}
         canConvert={canConvert}
+        canCreateProfile={canCreateProfile}
         canDelete={canDelete}
         canEdit={canEdit}
         key={selectedLead.id}
         lead={selectedLead}
         onBack={() => setSelectedLeadId(null)}
         onConvert={onConvert}
+        onCreateAccount={onCreateAccount}
         onDelete={deleteLead}
         onLogFollowUp={(note) => logFollowUp(selectedLead.id, note)}
         updateLead={updateLead}
@@ -5530,6 +5729,7 @@ function LeadsView({
 
 function GroupResumeView({
   account,
+  accounts,
   acknowledgeDepartment,
   appendBeoHistory,
   bookings,
@@ -5538,6 +5738,7 @@ function GroupResumeView({
   initialResumeBookingId,
   leads,
   onConvert,
+  onCreateAccount,
   onOpenBooking,
   onSaveResume,
   propertyProfile,
@@ -5546,6 +5747,7 @@ function GroupResumeView({
   submitDepartmentInstruction,
 }: {
   account: LoginSession
+  accounts: Account[]
   acknowledgeDepartment: (bookingId: string, dept: BeoDepartment, by: string) => void
   appendBeoHistory: (bookingId: string, note: string) => void
   bookings: EventBooking[]
@@ -5556,6 +5758,7 @@ function GroupResumeView({
   initialResumeBookingId?: string | null
   leads: Lead[]
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
+  onCreateAccount: (account: Account) => void
   onOpenBooking: (bookingId: string) => void
   onSaveResume: (bookingId: string, resume: GroupResume) => void
   propertyProfile: PropertyProfile
@@ -5596,6 +5799,7 @@ function GroupResumeView({
   return (
     <LeadsView
       account={account}
+      accounts={accounts}
       initialLeadId={initialLeadId}
       leads={leads}
       listFooter={
@@ -5640,6 +5844,7 @@ function GroupResumeView({
         </section>
       }
       onConvert={onConvert}
+      onCreateAccount={onCreateAccount}
       restrictToType="Group Resume"
       setLeads={setLeads}
       title="Group resume leads"
