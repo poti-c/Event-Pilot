@@ -360,7 +360,57 @@ export type Account = {
   behavior: string
   leadSource: string
   notes: string
+  // Optional because the seeded profiles predate them; everything below is
+  // captured by the "New customer profile" form and shown on the profile.
+  contactRole?: string
+  altContact?: string
+  altContactPhone?: string
+  // Legal billing entity, so a booking raised for this customer can inherit the
+  // details a Thai tax invoice needs instead of re-typing them per event.
+  billingCompanyName?: string
+  billingTaxId?: string
+  billingAddress?: string
+  paymentTerms?: string
+  createdAt?: string
 }
+
+/** Suggested customer categories. The field stays free text, so this is a
+ * datalist of common values rather than a closed enum. */
+export const ACCOUNT_TYPES = [
+  'Corporate',
+  'Association',
+  'Government',
+  'Embassy / Consulate',
+  'Travel trade',
+  'Wedding / Social',
+  'Education',
+  'Non-profit',
+  'Agency / Event planner',
+]
+
+/** Suggested lead sources, shared by the CRM profile form. */
+export const LEAD_SOURCES = [
+  'Website inquiry',
+  'Phone inquiry',
+  'Walk-in',
+  'Repeat corporate account',
+  'Association renewal',
+  'Planner referral',
+  'Past guest referral',
+  'Travel agent',
+  'Social media',
+  'Trade show',
+]
+
+/** Suggested payment terms for the billing block. */
+export const PAYMENT_TERMS = [
+  'Full prepayment',
+  '50% deposit, balance on the event day',
+  '30% deposit, balance 7 days before',
+  'Credit 15 days',
+  'Credit 30 days',
+  'Credit 60 days',
+]
 
 export type LeadStage = 'New' | 'Contacted' | 'Qualified' | 'Proposal Sent' | 'Won' | 'Lost'
 
@@ -778,6 +828,14 @@ export const accounts: Account[] = [
     behavior: 'Fast approver after finance receives itemized proforma.',
     leadSource: 'Repeat corporate account',
     notes: 'Prefers precise run sheets and low-profile VIP handling.',
+    contactRole: 'Head of Corporate Communications',
+    altContact: 'Praew T.',
+    altContactPhone: '+66 81 555 0177',
+    billingCompanyName: 'Siam Retail Group Co., Ltd.',
+    billingTaxId: '0105539000001',
+    billingAddress: '188 Rama I Road, Pathum Wan, Bangkok 10330',
+    paymentTerms: 'Credit 30 days',
+    createdAt: '2024-02-14',
   },
   {
     id: 'ACC-02',
@@ -795,6 +853,12 @@ export const accounts: Account[] = [
     behavior: 'Compares AV line items closely and asks for visual mockups.',
     leadSource: 'Website inquiry',
     notes: 'Potential high-value tech account if launch is successful.',
+    contactRole: 'Marketing Manager',
+    billingCompanyName: 'LannaTech Co., Ltd.',
+    billingTaxId: '0505561000123',
+    billingAddress: '55/2 Huay Kaew Road, Suthep, Mueang Chiang Mai 50200',
+    paymentTerms: '50% deposit, balance on the event day',
+    createdAt: '2026-05-18',
   },
   {
     id: 'ACC-03',
@@ -812,6 +876,14 @@ export const accounts: Account[] = [
     behavior: 'Renews annually when session timing and AV reliability are strong.',
     leadSource: 'Association renewal',
     notes: 'Requires strong speaker-room coordination.',
+    contactRole: 'Conference Chair',
+    altContact: 'Somchai P.',
+    altContactPhone: '+66 83 900 4412',
+    billingCompanyName: 'Northern Medical Association',
+    billingTaxId: '0993000112233',
+    billingAddress: '110 Sirimangkalajarn Road, Suthep, Mueang Chiang Mai 50200',
+    paymentTerms: '30% deposit, balance 7 days before',
+    createdAt: '2023-08-01',
   },
 ]
 

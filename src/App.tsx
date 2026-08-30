@@ -69,12 +69,15 @@ import {
 } from './usersClient'
 import type { ManagedUser, NewUserInput } from './usersClient'
 import {
-  accounts,
+  accounts as initialAccounts,
+  ACCOUNT_TYPES,
   BEO_DEPARTMENTS,
   initialBookings,
+  LEAD_SOURCES,
   LEAD_TYPES,
   leads as initialLeads,
   naNirandProfile,
+  PAYMENT_TERMS,
   products as initialProducts,
   rolePermissions,
   tasks,
@@ -1246,6 +1249,7 @@ type Action =
   | 'booking:fallBackStatus'
   | 'packages:edit'
   | 'venues:edit'
+  | 'crm:createProfile'
   | 'leads:create'
   | 'leads:edit'
   | 'leads:delete'
@@ -1267,6 +1271,7 @@ const ACTION_CATALOG: { key: Action; label: string; group: string }[] = [
   { key: 'booking:create', label: 'Create bookings', group: 'Bookings' },
   { key: 'booking:advanceStatus', label: 'Advance booking status', group: 'Bookings' },
   { key: 'booking:fallBackStatus', label: 'Move booking status back', group: 'Bookings' },
+  { key: 'crm:createProfile', label: 'Create customer profiles', group: 'CRM' },
   { key: 'leads:create', label: 'Create leads', group: 'Leads' },
   { key: 'leads:edit', label: 'Edit leads', group: 'Leads' },
   { key: 'leads:delete', label: 'Delete leads', group: 'Leads' },
@@ -1317,6 +1322,7 @@ const MANAGER_ONLY_ADDITIONS: Action[] = [
   'booking:create',
   'booking:advanceStatus',
   'booking:fallBackStatus',
+  'crm:createProfile',
   'leads:create',
   'leads:edit',
   'leads:delete',
@@ -1587,6 +1593,13 @@ function App() {
   const [bookings, setBookings] = useSyncedState(
     'eventpilot.bookings.v2',
     initialBookings,
+    userId,
+  )
+  // The CRM customer directory. Synced state rather than the static seed, so a
+  // profile created in the CRM survives a reload and reaches the booking form.
+  const [accounts, setAccounts] = useSyncedState<Account[]>(
+    'eventpilot.accounts.v1',
+    initialAccounts,
     userId,
   )
   // The vendor console's roster comes from the shared table, not per-user app
@@ -2297,6 +2310,19 @@ function App() {
   }
 
   /**
+   * Step 1 of the sales flow: register a customer in the CRM, so a lead, and
+   * later a booking, can be raised against a known profile instead of a name
+   * typed from scratch.
+   */
+  const createAccount = (draft: Account) => {
+    setAccounts((current) => [draft, ...current])
+    recordSandboxAction(
+      'Customer profile created',
+      `${draft.name} was added to the CRM as ${draft.id}.`,
+    )
+  }
+
+  /**
    * Step 2 of the sales flow: pull a CRM customer profile into a new lead and
    * land straight on it, so the only thing left to type is what they want.
    */
@@ -2743,6 +2769,7 @@ function App() {
         <main className="content-area">
           {activeModule === 'NewBooking' && (
             <NewBookingView
+              accounts={accounts}
               bookings={bookings}
               convertTarget={convertTarget}
               createBooking={createBooking}
@@ -2821,10 +2848,15 @@ function App() {
 
           {activeModule === 'CRM' && (
             <CrmView
+              accounts={accounts}
               bookings={bookings}
               canCreateLead={hasPermission(loginSession.role, 'leads:create')}
+              canCreateProfile={hasPermission(loginSession.role, 'crm:createProfile')}
               leads={leads}
+              onCreateAccount={createAccount}
               onPullIntoLeads={pullAccountIntoLeads}
+              products={products}
+              venues={venues}
             />
           )}
 
@@ -3515,7 +3547,53 @@ function AdminPortal({
   )
 }
 
+/** The three legal-entity fields a CRM profile can seed on a booking. */
+type AccountBilling = Pick<
+  NewBookingFormState,
+  'billingCompanyName' | 'billingTaxId' | 'billingAddress'
+>
+
+const EMPTY_ACCOUNT_BILLING: AccountBilling = {
+  billingCompanyName: '',
+  billingTaxId: '',
+  billingAddress: '',
+}
+
+function accountBilling(account: Account | undefined): AccountBilling {
+  if (!account) return EMPTY_ACCOUNT_BILLING
+  return {
+    billingCompanyName: account.billingCompanyName ?? '',
+    billingTaxId: account.billingTaxId ?? '',
+    billingAddress: account.billingAddress ?? '',
+  }
+}
+
+function hasAccountBilling(billing: AccountBilling) {
+  return Object.values(billing).some(Boolean)
+}
+
+/**
+ * Seed the billing block from the matching CRM profile without ever discarding
+ * a value already on the form — used when the form opens on a lead conversion,
+ * where the account name arrives pre-filled.
+ */
+function withAccountBilling(
+  form: NewBookingFormState,
+  accounts: Account[],
+): NewBookingFormState {
+  const billing = accountBilling(
+    accounts.find((account) => account.name === form.account),
+  )
+  return {
+    ...form,
+    billingCompanyName: form.billingCompanyName || billing.billingCompanyName,
+    billingTaxId: form.billingTaxId || billing.billingTaxId,
+    billingAddress: form.billingAddress || billing.billingAddress,
+  }
+}
+
 function NewBookingView({
+  accounts,
   bookings,
   convertTarget = 'booking',
   createBooking,
@@ -3525,6 +3603,7 @@ function NewBookingView({
   recordSandboxAction,
   setActiveModule,
 }: {
+  accounts: Account[]
   bookings: EventBooking[]
   convertTarget?: 'booking' | 'proposal'
   createBooking: (booking: EventBooking) => void
@@ -3534,8 +3613,17 @@ function NewBookingView({
   recordSandboxAction: (title: string, detail: string) => void
   setActiveModule: (module: ModuleId) => void
 }) {
-  const [form, setForm] = useState<NewBookingFormState>(() => prefill ?? getNewBookingDefaults())
+  const [form, setForm] = useState<NewBookingFormState>(() =>
+    withAccountBilling(prefill ?? getNewBookingDefaults(), accounts),
+  )
   const [formNotice, setFormNotice] = useState('')
+  // What the CRM profile last put in the billing block. Switching customers
+  // replaces those values, but anything typed by hand is left alone.
+  const seededBilling = useRef<AccountBilling>(
+    accountBilling(
+      accounts.find((account) => account.name === (prefill?.account ?? '')),
+    ),
+  )
   const updateField = <K extends keyof NewBookingFormState>(
     field: K,
     value: NewBookingFormState[K],
@@ -3543,6 +3631,30 @@ function NewBookingView({
     setForm((current) => ({ ...current, [field]: value }))
   }
   const selectedAccount = accounts.find((account) => account.name === form.account)
+
+  /**
+   * Typing or picking a client also pulls that customer's legal billing entity
+   * across, so a tax invoice never gets re-keyed per event.
+   */
+  const selectAccount = (value: string) => {
+    const incoming = accountBilling(
+      accounts.find((account) => account.name === value),
+    )
+    const previous = seededBilling.current
+    // Only take over a field that is blank or still holds the previous
+    // customer's seeded value.
+    const inherit = (field: keyof AccountBilling) =>
+      !form[field] || form[field] === previous[field] ? incoming[field] : form[field]
+
+    setForm({
+      ...form,
+      account: value,
+      billingCompanyName: inherit('billingCompanyName'),
+      billingTaxId: inherit('billingTaxId'),
+      billingAddress: inherit('billingAddress'),
+    })
+    seededBilling.current = incoming
+  }
   const selectedVenue = initialVenues.find((venue) => venue.name === form.venue)
   // The Package / product field references the whole catalogue; picking a
   // fixed-price wedding package also seeds the forecast revenue.
@@ -3735,7 +3847,7 @@ function NewBookingView({
               <FormField label="Client / account" required>
                 <input
                   list="account-options"
-                  onChange={(event) => updateField('account', event.target.value)}
+                  onChange={(event) => selectAccount(event.target.value)}
                   placeholder="Company, family, or group"
                   required
                   value={form.account}
@@ -4037,6 +4149,15 @@ function NewBookingView({
 
           <fieldset className="panel form-section">
             <legend>Billing instructions</legend>
+            {selectedAccount && hasAccountBilling(accountBilling(selectedAccount)) && (
+              <p className="panel-header-detail">
+                Legal entity filled from {selectedAccount.name}’s CRM profile
+                {selectedAccount.paymentTerms
+                  ? ` (agreed terms: ${selectedAccount.paymentTerms})`
+                  : ''}
+                . Edit anything that differs for this event.
+              </p>
+            )}
             <div className="form-grid">
               <FormField hint="e.g. Master Account, direct bill to client, third-party sponsor." label="Billing to company">
                 <input
@@ -4157,6 +4278,7 @@ function NewBookingView({
 function FormField({
   asGroup,
   children,
+  className,
   hint,
   label,
   required,
@@ -4168,6 +4290,8 @@ function FormField({
    */
   asGroup?: boolean
   children: React.ReactNode
+  /** Extra class on the wrapper, e.g. `form-field-wide` to span both columns. */
+  className?: string
   hint?: string
   label: string
   required?: boolean
@@ -4175,7 +4299,7 @@ function FormField({
 }) {
   const Wrapper = asGroup ? 'div' : 'label'
   return (
-    <Wrapper className="form-field">
+    <Wrapper className={className ? `form-field ${className}` : 'form-field'}>
       <span>
         {label}
         {required && <em>{requiredLabel}</em>}
@@ -6858,44 +6982,121 @@ function GroupResumeDocumentView({
 }
 
 function CrmView({
+  accounts,
   bookings,
   canCreateLead,
+  canCreateProfile,
   leads,
+  onCreateAccount,
   onPullIntoLeads,
+  products,
+  venues,
 }: {
+  accounts: Account[]
   bookings: EventBooking[]
   canCreateLead: boolean
+  canCreateProfile: boolean
   leads: Lead[]
+  onCreateAccount: (account: Account) => void
   onPullIntoLeads: (account: Account, leadType: LeadType) => void
+  products: Product[]
+  venues: Venue[]
 }) {
   return (
     <CustomerDirectory
+      accounts={accounts}
       bookings={bookings}
       canCreateLead={canCreateLead}
+      canCreateProfile={canCreateProfile}
       leads={leads}
+      onCreateAccount={onCreateAccount}
       onPullIntoLeads={onPullIntoLeads}
+      products={products}
+      venues={venues}
     />
   )
 }
 
+/** Next free ACC-xx id, so a new profile never collides with a seeded one. */
+function nextAccountId(existing: Account[]) {
+  const highest = existing.reduce((top, account) => {
+    const digits = Number(account.id.replace(/\D/g, ''))
+    return Number.isFinite(digits) && digits > top ? digits : top
+  }, 0)
+  return `ACC-${String(highest + 1).padStart(2, '0')}`
+}
+
 function CustomerDirectory({
+  accounts,
   bookings,
   canCreateLead,
+  canCreateProfile,
   leads,
+  onCreateAccount,
   onPullIntoLeads,
+  products,
+  venues,
 }: {
+  accounts: Account[]
   bookings: EventBooking[]
   canCreateLead: boolean
+  canCreateProfile: boolean
   leads: Lead[]
+  onCreateAccount: (account: Account) => void
   onPullIntoLeads: (account: Account, leadType: LeadType) => void
+  products: Product[]
+  venues: Venue[]
 }) {
   const [pullTrack, setPullTrack] = useState<LeadType>('BEO')
   const [selectedAccountId, setSelectedAccountId] = useState(accounts[0]?.id)
+  // The directory and the "New customer profile" form share this view; the form
+  // takes the full width because it has far more fields than the drawer shows.
+  const [creating, setCreating] = useState(false)
   const sortedAccounts = [...accounts].sort((first, second) =>
     first.name.localeCompare(second.name),
   )
   const selectedAccount =
     accounts.find((account) => account.id === selectedAccountId) ?? accounts[0]
+
+  const saveNewAccount = (account: Account) => {
+    onCreateAccount(account)
+    setSelectedAccountId(account.id)
+    setCreating(false)
+  }
+
+  if (creating) {
+    return (
+      <NewCustomerProfileForm
+        existingAccounts={accounts}
+        onCancel={() => setCreating(false)}
+        onSave={saveNewAccount}
+        products={products}
+        venues={venues}
+      />
+    )
+  }
+
+  if (!selectedAccount) {
+    return (
+      <section className="panel">
+        <PanelHeader
+          title="Customer directory"
+          detail="No customer profiles yet."
+        />
+        {canCreateProfile && (
+          <button
+            className="primary-action"
+            onClick={() => setCreating(true)}
+            type="button"
+          >
+            <Plus size={17} />
+            New customer profile
+          </button>
+        )}
+      </section>
+    )
+  }
+
   const selectedAccountBookings = bookings.filter(
     (booking) => booking.account === selectedAccount.name,
   )
@@ -6918,10 +7119,35 @@ function CustomerDirectory({
   )
   const availableLetters = new Set(Object.keys(groupedAccounts))
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
+  const hasBillingDetails = Boolean(
+    selectedAccount.billingCompanyName ||
+      selectedAccount.billingTaxId ||
+      selectedAccount.billingAddress ||
+      selectedAccount.paymentTerms,
+  )
 
   return (
     <div className="crm-directory-layout">
       <section className="panel crm-directory-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Customer directory</h2>
+            <p className="panel-header-detail">
+              {accounts.length} customer profile{accounts.length === 1 ? '' : 's'}
+            </p>
+          </div>
+          {canCreateProfile && (
+            <button
+              className="primary-action"
+              onClick={() => setCreating(true)}
+              type="button"
+            >
+              <Plus size={17} />
+              New customer profile
+            </button>
+          )}
+        </div>
+
         <div className="alphabet-strip">
           {alphabet.map((letter) => (
             <span
@@ -7008,31 +7234,72 @@ function CustomerDirectory({
 
         <div className="detail-grid">
           <Detail label="Contact" value={selectedAccount.contact} />
+          {selectedAccount.contactRole && (
+            <Detail label="Position" value={selectedAccount.contactRole} />
+          )}
           <Detail label="Email" value={selectedAccount.email} />
-          <Detail label="Phone" value={selectedAccount.phone} />
-          <Detail label="Budget" value={selectedAccount.budgetRange} />
-          <Detail label="Lead source" value={selectedAccount.leadSource} />
-          <Detail label="Preferred venue" value={selectedAccount.preferredVenue} />
+          <Detail label="Phone" value={selectedAccount.phone || '—'} />
+          {selectedAccount.altContact && (
+            <Detail label="Secondary contact" value={selectedAccount.altContact} />
+          )}
+          {selectedAccount.altContactPhone && (
+            <Detail label="Secondary phone" value={selectedAccount.altContactPhone} />
+          )}
+          <Detail label="Budget" value={selectedAccount.budgetRange || '—'} />
+          <Detail label="Lead source" value={selectedAccount.leadSource || '—'} />
+          <Detail
+            label="Preferred venue"
+            value={selectedAccount.preferredVenue || 'No preference yet'}
+          />
+          {selectedAccount.createdAt && (
+            <Detail label="Profile created" value={shortDate(selectedAccount.createdAt)} />
+          )}
         </div>
+
+        {hasBillingDetails && (
+          <div className="drawer-section">
+            <h3>Billing entity</h3>
+            <div className="detail-grid">
+              <Detail
+                label="Legal name"
+                value={selectedAccount.billingCompanyName || '—'}
+              />
+              <Detail label="Tax ID" value={selectedAccount.billingTaxId || '—'} />
+              <Detail
+                label="Payment terms"
+                value={selectedAccount.paymentTerms || '—'}
+              />
+              <Detail label="Address" value={selectedAccount.billingAddress || '—'} />
+            </div>
+          </div>
+        )}
 
         <div className="drawer-section">
           <h3>Preferred packages</h3>
-          <TagList items={selectedAccount.preferredPackages} />
+          {selectedAccount.preferredPackages.length > 0 ? (
+            <TagList items={selectedAccount.preferredPackages} />
+          ) : (
+            <p>None recorded yet.</p>
+          )}
         </div>
 
         <div className="drawer-section">
           <h3>Dietary and service notes</h3>
-          <TagList items={selectedAccount.dietary} />
+          {selectedAccount.dietary.length > 0 ? (
+            <TagList items={selectedAccount.dietary} />
+          ) : (
+            <p>None recorded yet.</p>
+          )}
         </div>
 
         <div className="drawer-section">
           <h3>Customer behavior</h3>
-          <p>{selectedAccount.behavior}</p>
+          <p className="notes-body">{selectedAccount.behavior || 'Not recorded yet.'}</p>
         </div>
 
         <div className="drawer-section">
           <h3>Profile notes</h3>
-          <p>{selectedAccount.notes}</p>
+          <p className="notes-body">{selectedAccount.notes || 'No notes yet.'}</p>
         </div>
 
         <div className="drawer-section crm-pull-section">
@@ -7115,6 +7382,522 @@ function CustomerDirectory({
         </div>
       </aside>
     </div>
+  )
+}
+
+/** Every field the "New customer profile" form collects, all as strings so one
+ * generic updater can drive the whole form; numbers are parsed on save. */
+type NewAccountFormState = {
+  name: string
+  type: string
+  contact: string
+  contactRole: string
+  email: string
+  phone: string
+  altContact: string
+  altContactPhone: string
+  billingCompanyName: string
+  billingTaxId: string
+  billingAddress: string
+  paymentTerms: string
+  budgetRange: string
+  leadSource: string
+  preferredVenue: string
+  preferredPackages: string[]
+  dietary: string[]
+  events: string
+  totalRevenue: string
+  behavior: string
+  notes: string
+}
+
+function getNewAccountDefaults(): NewAccountFormState {
+  return {
+    name: '',
+    type: 'Corporate',
+    contact: '',
+    contactRole: '',
+    email: '',
+    phone: '',
+    altContact: '',
+    altContactPhone: '',
+    billingCompanyName: '',
+    billingTaxId: '',
+    billingAddress: '',
+    paymentTerms: '',
+    budgetRange: '',
+    leadSource: '',
+    preferredVenue: '',
+    preferredPackages: [],
+    dietary: [],
+    events: '0',
+    totalRevenue: '0',
+    behavior: '',
+    notes: '',
+  }
+}
+
+/**
+ * Step 1 of the sales flow. Collects everything the customer profile shows —
+ * company, contacts, billing entity, event preferences, trading history, and
+ * the qualitative notes — so a profile pulled into a lead later carries the
+ * full picture instead of a bare name.
+ */
+function NewCustomerProfileForm({
+  existingAccounts,
+  onCancel,
+  onSave,
+  products,
+  venues,
+}: {
+  existingAccounts: Account[]
+  onCancel: () => void
+  onSave: (account: Account) => void
+  products: Product[]
+  venues: Venue[]
+}) {
+  const [form, setForm] = useState<NewAccountFormState>(getNewAccountDefaults)
+  const [formNotice, setFormNotice] = useState('')
+  const updateField = <K extends keyof NewAccountFormState>(
+    field: K,
+    value: NewAccountFormState[K],
+  ) => {
+    setForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const newId = nextAccountId(existingAccounts)
+  const taxIdDigits = form.billingTaxId.replace(/\D/g, '')
+  const taxIdValid = taxIdDigits.length === 13
+  const packageOptions = products.map((product) => product.name)
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault()
+    const name = form.name.trim()
+    const contact = form.contact.trim()
+    const email = form.email.trim()
+
+    if (!name || !contact || !email) {
+      setFormNotice('Customer name, contact person, and email are required.')
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setFormNotice('Enter a valid email address for the primary contact.')
+      return
+    }
+    if (
+      existingAccounts.some(
+        (account) => account.name.trim().toLowerCase() === name.toLowerCase(),
+      )
+    ) {
+      setFormNotice(`${name} already has a profile in the CRM.`)
+      return
+    }
+    if (form.billingTaxId.trim() && !taxIdValid) {
+      setFormNotice('A Thai tax ID must be 13 digits, or left blank.')
+      return
+    }
+
+    const events = Math.max(0, Number(form.events) || 0)
+    const totalRevenue = Math.max(0, Number(form.totalRevenue) || 0)
+
+    onSave({
+      id: newId,
+      name,
+      type: form.type.trim() || 'Corporate',
+      contact,
+      email,
+      phone: form.phone.trim(),
+      totalRevenue,
+      events,
+      preferredVenue: form.preferredVenue.trim(),
+      preferredPackages: form.preferredPackages,
+      dietary: form.dietary,
+      budgetRange: form.budgetRange.trim(),
+      behavior: form.behavior.trim(),
+      leadSource: form.leadSource.trim(),
+      notes: form.notes.trim(),
+      contactRole: form.contactRole.trim(),
+      altContact: form.altContact.trim(),
+      altContactPhone: form.altContactPhone.trim(),
+      billingCompanyName: form.billingCompanyName.trim(),
+      billingTaxId: taxIdDigits,
+      billingAddress: form.billingAddress.trim(),
+      paymentTerms: form.paymentTerms.trim(),
+      createdAt: toDateKey(new Date()),
+    })
+  }
+
+  return (
+    <form className="page-stack new-profile-form" onSubmit={submit}>
+      <div className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>New customer profile</h2>
+            <p className="panel-header-detail">
+              Saved to the CRM as {newId}. Everything captured here carries across
+              when the profile is pulled into a lead.
+            </p>
+          </div>
+          <button className="secondary-action" onClick={onCancel} type="button">
+            <ChevronLeft size={16} />
+            Back to directory
+          </button>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Customer"
+          detail="Who the account is and how it reached the property."
+        />
+        <div className="form-grid">
+          <FormField label="Customer / company name" required>
+            <input
+              autoFocus
+              onChange={(event) => updateField('name', event.target.value)}
+              placeholder="Company, association, family, or group"
+              required
+              value={form.name}
+            />
+          </FormField>
+          <FormField label="Customer type" hint="Pick a suggestion or type your own.">
+            <input
+              list="account-type-options"
+              onChange={(event) => updateField('type', event.target.value)}
+              placeholder="Corporate, association, wedding..."
+              value={form.type}
+            />
+            <datalist id="account-type-options">
+              {ACCOUNT_TYPES.map((type) => (
+                <option key={type} value={type} />
+              ))}
+            </datalist>
+          </FormField>
+          <FormField label="Lead source">
+            <input
+              list="account-source-options"
+              onChange={(event) => updateField('leadSource', event.target.value)}
+              placeholder="How this customer found the property"
+              value={form.leadSource}
+            />
+            <datalist id="account-source-options">
+              {LEAD_SOURCES.map((source) => (
+                <option key={source} value={source} />
+              ))}
+            </datalist>
+          </FormField>
+          <FormField label="Budget range" hint="Typical spend per event.">
+            <input
+              onChange={(event) => updateField('budgetRange', event.target.value)}
+              placeholder="300k-500k THB"
+              value={form.budgetRange}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Contacts"
+          detail="The primary contact is who every lead, proposal, and BEO is addressed to."
+        />
+        <div className="form-grid">
+          <FormField label="Primary contact" required>
+            <input
+              onChange={(event) => updateField('contact', event.target.value)}
+              placeholder="Full name"
+              required
+              value={form.contact}
+            />
+          </FormField>
+          <FormField label="Position / role">
+            <input
+              onChange={(event) => updateField('contactRole', event.target.value)}
+              placeholder="Marketing Manager, Conference Chair..."
+              value={form.contactRole}
+            />
+          </FormField>
+          <FormField label="Email" required>
+            <input
+              onChange={(event) => updateField('email', event.target.value)}
+              placeholder="name@company.example"
+              required
+              type="email"
+              value={form.email}
+            />
+          </FormField>
+          <FormField label="Phone">
+            <input
+              onChange={(event) => updateField('phone', event.target.value)}
+              placeholder="+66 81 555 0142"
+              value={form.phone}
+            />
+          </FormField>
+          <FormField label="Secondary contact">
+            <input
+              onChange={(event) => updateField('altContact', event.target.value)}
+              placeholder="Assistant, finance, or on-site coordinator"
+              value={form.altContact}
+            />
+          </FormField>
+          <FormField label="Secondary phone">
+            <input
+              onChange={(event) => updateField('altContactPhone', event.target.value)}
+              placeholder="+66 81 555 0177"
+              value={form.altContactPhone}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Billing entity"
+          detail="The legal payer for tax invoices, which is often not the trading name above."
+        />
+        <div className="form-grid">
+          <FormField label="Legal company name">
+            <input
+              onChange={(event) => updateField('billingCompanyName', event.target.value)}
+              placeholder="Siam Retail Group Co., Ltd."
+              value={form.billingCompanyName}
+            />
+          </FormField>
+          <FormField
+            label="Tax ID (13 digits)"
+            hint={
+              form.billingTaxId && !taxIdValid
+                ? `${taxIdDigits.length} of 13 digits`
+                : undefined
+            }
+          >
+            <input
+              inputMode="numeric"
+              onChange={(event) => updateField('billingTaxId', event.target.value)}
+              placeholder="0000000000000"
+              value={form.billingTaxId}
+            />
+          </FormField>
+          <FormField label="Payment terms">
+            <input
+              list="account-terms-options"
+              onChange={(event) => updateField('paymentTerms', event.target.value)}
+              placeholder="Credit 30 days"
+              value={form.paymentTerms}
+            />
+            <datalist id="account-terms-options">
+              {PAYMENT_TERMS.map((term) => (
+                <option key={term} value={term} />
+              ))}
+            </datalist>
+          </FormField>
+        </div>
+        <div className="form-grid form-grid-textareas">
+          <FormField className="form-field-wide" label="Registered billing address">
+            <textarea
+              onChange={(event) => updateField('billingAddress', event.target.value)}
+              placeholder="House no., road, subdistrict, district, province, postcode"
+              rows={3}
+              value={form.billingAddress}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Event preferences"
+          detail="Carried into the lead notes so nobody re-asks a known client."
+        />
+        <div className="form-grid">
+          <FormField label="Preferred venue">
+            <select
+              onChange={(event) => updateField('preferredVenue', event.target.value)}
+              value={form.preferredVenue}
+            >
+              <option value="">No preference yet</option>
+              {venues.map((venue) => (
+                <option key={venue.id} value={venue.name}>
+                  {venue.name}
+                </option>
+              ))}
+            </select>
+          </FormField>
+        </div>
+        <div className="crm-chip-fields">
+          <ChipField
+            addLabel="Add package"
+            items={form.preferredPackages}
+            label="Preferred packages"
+            onChange={(next) => updateField('preferredPackages', next)}
+            options={packageOptions}
+            placeholder="Pick from the catalogue or type your own"
+          />
+          <ChipField
+            addLabel="Add note"
+            items={form.dietary}
+            label="Dietary and service notes"
+            onChange={(next) => updateField('dietary', next)}
+            placeholder="Halal option, no pork table, vegetarian..."
+          />
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="History with the property"
+          detail="Leave both at zero for a brand-new customer; past figures seed the opening lead value."
+        />
+        <div className="form-grid">
+          <FormField label="Past events">
+            <input
+              inputMode="numeric"
+              min="0"
+              onChange={(event) => updateField('events', event.target.value)}
+              type="number"
+              value={form.events}
+            />
+          </FormField>
+          <FormField label="Past revenue (THB)">
+            <input
+              inputMode="numeric"
+              min="0"
+              onChange={(event) => updateField('totalRevenue', event.target.value)}
+              type="number"
+              value={form.totalRevenue}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Notes"
+          detail="Internal only — never printed on a client-facing document."
+        />
+        <div className="form-grid form-grid-textareas">
+          <FormField label="Customer behavior">
+            <textarea
+              onChange={(event) => updateField('behavior', event.target.value)}
+              placeholder="How they decide: who approves, what they compare, how fast they sign..."
+              rows={3}
+              value={form.behavior}
+            />
+          </FormField>
+          <FormField label="Profile notes">
+            <textarea
+              onChange={(event) => updateField('notes', event.target.value)}
+              placeholder="Anything the next person handling this customer should know."
+              rows={3}
+              value={form.notes}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="panel">
+        {formNotice && (
+          <div className="validation-panel">
+            <TriangleAlert size={17} />
+            <div>
+              <strong>Check before saving</strong>
+              <span>{formNotice}</span>
+            </div>
+          </div>
+        )}
+        <div className="status-actions">
+          <button className="secondary-action" onClick={onCancel} type="button">
+            <ChevronLeft size={17} />
+            Cancel
+          </button>
+          <button className="primary-action" type="submit">
+            <Plus size={17} />
+            Save customer profile
+          </button>
+        </div>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * A free-text list field rendered as removable chips. Used for the profile's
+ * preferred packages and dietary notes, which are both open-ended lists.
+ */
+function ChipField({
+  addLabel,
+  items,
+  label,
+  onChange,
+  options,
+  placeholder,
+}: {
+  addLabel: string
+  items: string[]
+  label: string
+  onChange: (next: string[]) => void
+  options?: string[]
+  placeholder?: string
+}) {
+  const [draft, setDraft] = useState('')
+  const listId = `chip-options-${label.replace(/\W+/g, '-').toLowerCase()}`
+
+  const add = () => {
+    const value = draft.trim()
+    if (!value) return
+    if (items.some((item) => item.toLowerCase() === value.toLowerCase())) {
+      setDraft('')
+      return
+    }
+    onChange([...items, value])
+    setDraft('')
+  }
+
+  return (
+    <FormField asGroup label={label}>
+      <div className="chip-field-add">
+        <input
+          aria-label={label}
+          list={options ? listId : undefined}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              add()
+            }
+          }}
+          placeholder={placeholder}
+          value={draft}
+        />
+        <button className="secondary-action" onClick={add} type="button">
+          <Plus size={15} />
+          {addLabel}
+        </button>
+      </div>
+      {options && (
+        <datalist id={listId}>
+          {options.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+      )}
+      {items.length > 0 && (
+        <div className="chip-field-list">
+          {items.map((item) => (
+            <span className="chip-field-chip" key={item}>
+              {item}
+              <button
+                aria-label={`Remove ${item}`}
+                onClick={() => onChange(items.filter((entry) => entry !== item))}
+                type="button"
+              >
+                <X size={13} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </FormField>
   )
 }
 

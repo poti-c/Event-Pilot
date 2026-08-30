@@ -1039,6 +1039,11 @@ span.status-badge {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* A field that should run the full width of a two-column form grid. */
+.form-field-wide {
+  grid-column: 1 / -1;
+}
+
 .form-field {
   min-width: 0;
   display: grid;
@@ -1974,6 +1979,9 @@ span.status-badge {
   margin: 0;
   color: var(--text-strong);
   font-size: 14px;
+  /* Long unbroken values (emails, tax IDs, URLs) must wrap inside their column
+     rather than run under the neighbouring field. */
+  overflow-wrap: anywhere;
 }
 
 .drawer-section {
@@ -5632,6 +5640,90 @@ button.opportunity-card {
   display: grid;
   gap: 10px;
   margin-top: 10px;
+}
+
+/* ---------------------------------------------------------------- *
+ * CRM → New customer profile
+ * ---------------------------------------------------------------- */
+
+/* The directory header sits above the alphabet strip; its button stays on one
+   line even when the panel is narrow. */
+.crm-directory-panel > .panel-header {
+  margin-bottom: 0;
+}
+
+.crm-directory-panel > .panel-header .primary-action {
+  white-space: nowrap;
+}
+
+.new-profile-form .panel-header {
+  gap: 16px;
+}
+
+.crm-chip-fields {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.chip-field-add {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.chip-field-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chip-field-add .secondary-action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.chip-field-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.chip-field-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 6px 5px 11px;
+}
+
+.chip-field-chip button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.chip-field-chip button:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+@media (max-width: 760px) {
+  .chip-field-add {
+    flex-direction: column;
+  }
 }
 
 /* ---------------------------------------------------------------- *
