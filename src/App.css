@@ -5720,6 +5720,17 @@ button.opportunity-card {
   color: var(--danger);
 }
 
+/* The read-only lead's CRM link: the "not in the CRM" line and its action. */
+.lead-crm-link {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.lead-crm-link p {
+  margin: 0;
+}
+
 /* Manual company name + its "Add to CRM" action, on one row. */
 .lead-company-manual {
   display: flex;

@@ -1696,6 +1696,10 @@ function App() {
   // draft. Reset on any other navigation so it fires exactly once.
   const [leadDraftNonce, setLeadDraftNonce] = useState(0)
   const [openLeadDraft, setOpenLeadDraft] = useState(false)
+  // The customer profile the CRM should open onto, and a nonce that remounts
+  // the directory so a repeat click on the same profile still navigates.
+  const [crmAccountId, setCrmAccountId] = useState<string | null>(null)
+  const [crmNavNonce, setCrmNavNonce] = useState(0)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'All'>('All')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -2322,6 +2326,15 @@ function App() {
     )
   }
 
+  /** Jump from a lead to the customer profile it is linked to. */
+  const openCrmProfile = (accountId: string) => {
+    runGuarded(() => {
+      setCrmAccountId(accountId)
+      setCrmNavNonce((nonce) => nonce + 1)
+      setActiveModule('CRM')
+    })
+  }
+
   /**
    * Step 2 of the sales flow: pull a CRM customer profile into a new lead and
    * land straight on it, so the only thing left to type is what they want.
@@ -2819,6 +2832,7 @@ function App() {
               leads={leads}
               onConvert={convertLead}
               onCreateAccount={createAccount}
+              onOpenCrmProfile={openCrmProfile}
               setLeads={setLeads}
               startDraft={openLeadDraft}
             />
@@ -2842,6 +2856,7 @@ function App() {
                 setSelectedBookingId(bookingId)
                 setActiveModule('Bookings')
               }}
+              onOpenCrmProfile={openCrmProfile}
               onSaveResume={updateBookingGroupResume}
               propertyProfile={propertyProfile}
               session={loginSession}
@@ -2856,6 +2871,8 @@ function App() {
               bookings={bookings}
               canCreateLead={hasPermission(loginSession.role, 'leads:create')}
               canCreateProfile={hasPermission(loginSession.role, 'crm:createProfile')}
+              initialAccountId={crmAccountId}
+              key={crmNavNonce}
               leads={leads}
               onCreateAccount={createAccount}
               onPullIntoLeads={pullAccountIntoLeads}
@@ -4979,6 +4996,7 @@ function LeadDetailView({
   onDelete,
   onDiscardNew,
   onLogFollowUp,
+  onOpenCrmProfile,
   onSaveNew,
   updateLead,
 }: {
@@ -4998,6 +5016,7 @@ function LeadDetailView({
   onDelete: (id: string) => void
   onDiscardNew?: () => void
   onLogFollowUp: (note: string) => void
+  onOpenCrmProfile: (accountId: string) => void
   onSaveNew?: () => void
   updateLead: <K extends keyof Lead>(id: string, field: K, value: Lead[K]) => void
 }) {
@@ -5017,6 +5036,17 @@ function LeadDetailView({
   const saveStage = () => {
     if (hasStageChange) updateLead(lead.id, 'stage', draftStage)
   }
+
+  // Whether this lead's company already has a CRM profile — drives both the
+  // read-only "CRM profile" section and its Add to CRM action.
+  const companyName = lead.company.trim()
+  const linkedAccount = accounts.find((account) => account.name === lead.company)
+  const canRegisterCompany =
+    canCreateProfile &&
+    companyName.length > 0 &&
+    !accounts.some(
+      (account) => account.name.trim().toLowerCase() === companyName.toLowerCase(),
+    )
 
   /**
    * Register the manually typed company in the CRM from what the lead already
@@ -5296,6 +5326,7 @@ function LeadDetailView({
         ) : (
           <>
             <div className="detail-grid">
+              <Detail label="Company" value={lead.company || 'Not set'} />
               <Detail label="Lead type" value={leadTypeOf(lead)} />
               <Detail label="Created" value={lead.createdAt} />
               <Detail label="Last updated" value={leadLastUpdated(lead)} />
@@ -5309,6 +5340,42 @@ function LeadDetailView({
                 <Detail label="Lost reason" value={lead.lostReason || 'Not recorded'} />
               )}
             </div>
+            {companyName && (
+              <div className="drawer-section">
+                <h3>CRM profile</h3>
+                {linkedAccount ? (
+                  <button
+                    className="text-action"
+                    onClick={() => onOpenCrmProfile(linkedAccount.id)}
+                    type="button"
+                  >
+                    Linked to {linkedAccount.id} — {linkedAccount.name}
+                    <ChevronRight size={15} />
+                  </button>
+                ) : (
+                  <div className="lead-crm-link">
+                    <p>
+                      {companyName} has no CRM profile yet, so this lead is not
+                      tied to a customer record.
+                    </p>
+                    {canRegisterCompany ? (
+                      <button
+                        className="secondary-action"
+                        onClick={addCompanyToCrm}
+                        type="button"
+                      >
+                        <Plus size={15} />
+                        Add {companyName} to the CRM
+                      </button>
+                    ) : (
+                      <p className="panel-header-detail">
+                        Ask a manager to add this company to the CRM.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="drawer-section">
               <h3>Notes</h3>
               {/* pre-line so multi-line notes — e.g. the block a CRM pull-in
@@ -5418,6 +5485,7 @@ function LeadsView({
   listFooter,
   onConvert,
   onCreateAccount,
+  onOpenCrmProfile,
   restrictToType,
   setLeads,
   startDraft = false,
@@ -5432,6 +5500,7 @@ function LeadsView({
   listFooter?: ReactNode
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
   onCreateAccount: (account: Account) => void
+  onOpenCrmProfile: (accountId: string) => void
   // When set, the view only shows leads on that track.
   restrictToType?: LeadType
   setLeads: (next: Lead[] | ((current: Lead[]) => Lead[])) => void
@@ -5590,6 +5659,7 @@ function LeadsView({
         onDelete={() => setDraftLead(null)}
         onDiscardNew={discardDraft}
         onLogFollowUp={() => {}}
+        onOpenCrmProfile={onOpenCrmProfile}
         onSaveNew={saveDraft}
         updateLead={updateDraft}
       />
@@ -5614,6 +5684,7 @@ function LeadsView({
         onCreateAccount={onCreateAccount}
         onDelete={deleteLead}
         onLogFollowUp={(note) => logFollowUp(selectedLead.id, note)}
+        onOpenCrmProfile={onOpenCrmProfile}
         updateLead={updateLead}
       />
     )
@@ -5740,6 +5811,7 @@ function GroupResumeView({
   onConvert,
   onCreateAccount,
   onOpenBooking,
+  onOpenCrmProfile,
   onSaveResume,
   propertyProfile,
   session,
@@ -5760,6 +5832,7 @@ function GroupResumeView({
   onConvert: (lead: Lead, target: 'booking' | 'proposal') => void
   onCreateAccount: (account: Account) => void
   onOpenBooking: (bookingId: string) => void
+  onOpenCrmProfile: (accountId: string) => void
   onSaveResume: (bookingId: string, resume: GroupResume) => void
   propertyProfile: PropertyProfile
   session: LoginSession
@@ -5845,6 +5918,7 @@ function GroupResumeView({
       }
       onConvert={onConvert}
       onCreateAccount={onCreateAccount}
+      onOpenCrmProfile={onOpenCrmProfile}
       restrictToType="Group Resume"
       setLeads={setLeads}
       title="Group resume leads"
@@ -7191,6 +7265,7 @@ function CrmView({
   bookings,
   canCreateLead,
   canCreateProfile,
+  initialAccountId,
   leads,
   onCreateAccount,
   onPullIntoLeads,
@@ -7201,6 +7276,8 @@ function CrmView({
   bookings: EventBooking[]
   canCreateLead: boolean
   canCreateProfile: boolean
+  // Opens straight onto this profile — used when arriving from a linked lead.
+  initialAccountId?: string | null
   leads: Lead[]
   onCreateAccount: (account: Account) => void
   onPullIntoLeads: (account: Account, leadType: LeadType) => void
@@ -7213,6 +7290,7 @@ function CrmView({
       bookings={bookings}
       canCreateLead={canCreateLead}
       canCreateProfile={canCreateProfile}
+      initialAccountId={initialAccountId}
       leads={leads}
       onCreateAccount={onCreateAccount}
       onPullIntoLeads={onPullIntoLeads}
@@ -7236,6 +7314,7 @@ function CustomerDirectory({
   bookings,
   canCreateLead,
   canCreateProfile,
+  initialAccountId,
   leads,
   onCreateAccount,
   onPullIntoLeads,
@@ -7246,6 +7325,7 @@ function CustomerDirectory({
   bookings: EventBooking[]
   canCreateLead: boolean
   canCreateProfile: boolean
+  initialAccountId?: string | null
   leads: Lead[]
   onCreateAccount: (account: Account) => void
   onPullIntoLeads: (account: Account, leadType: LeadType) => void
@@ -7253,7 +7333,9 @@ function CustomerDirectory({
   venues: Venue[]
 }) {
   const [pullTrack, setPullTrack] = useState<LeadType>('BEO')
-  const [selectedAccountId, setSelectedAccountId] = useState(accounts[0]?.id)
+  const [selectedAccountId, setSelectedAccountId] = useState(
+    initialAccountId ?? accounts[0]?.id,
+  )
   // The directory and the "New customer profile" form share this view; the form
   // takes the full width because it has far more fields than the drawer shows.
   const [creating, setCreating] = useState(false)
