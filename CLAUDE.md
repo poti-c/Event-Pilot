@@ -28,6 +28,11 @@ Use `npm run typecheck`, `npm run lint`, and `npm run build` when validating cha
   console is the real path `/admin`.
 - `src/consoleClient.ts` talks to the `eventpilot-console` edge function for the
   vendor console's own login and session.
+- `src/usersClient.ts` talks to the `eventpilot-users` edge function, which lets
+  a signed-in Top Management / Manager create, list, and delete real login
+  accounts (Settings → User management). BEO Viewers, editable departments, and
+  per-role permission overrides are app-layer per-user synced state, not that
+  function. See `supabase/README.md`.
 - `src/supabaseClient.ts` initializes Supabase (only when `VITE_SUPABASE_URL`
   and `VITE_SUPABASE_ANON_KEY` are set).
 

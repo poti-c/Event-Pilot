@@ -16,6 +16,9 @@ other apps in that project.
 | `20260718041956_eventpilot_top_management_user_admin` | Lets Top Management read/update all profiles, plus a guard trigger blocking role changes by non-Top-Management and demotion of the last Top Management account. |
 | `20260718120000_eventpilot_console_admins` | Vendor console identity: `eventpilot_console_admins`, login throttle, audit log, and the bcrypt verify/upsert functions. Service-role only — see "Vendor console" below. |
 | `20260718140000_eventpilot_billing_documents` | Client roster (`eventpilot_client_companies`), issuer settings, and the billing document engine (`eventpilot_documents`, `eventpilot_document_deliveries`, `eventpilot_document_counters`) with Thai VAT/WHT/branch fields. |
+| `20260718160000_eventpilot_client_active_users` | Client active-user tracking. |
+| `20260725120000_eventpilot_retire_vendor_owner_profile` | Removes the seeded vendor-owner profile (`workspace_code = 'admin'`) from `eventpilot_profiles` and reserves that workspace code, keeping the `/admin` vendor plane out of customers' Top Management user lists. Includes a manual note to delete the leftover `auth.users` row. |
+| `20260725130000_eventpilot_fix_handle_new_user` | Fixes the `eventpilot_handle_new_user()` trigger (auth.users → eventpilot_profiles). It defaulted new profiles to the pre-three-tier role `'Client User'`, which the current role CHECK rejects — breaking every admin-API `createUser`. Now defaults to `'staff'` and carries `username` through from user_metadata. |
 
 These files are the source of truth for rebuilding the schema. They are already
 applied to the live project — do not re-run them against it. Apply them in
@@ -82,3 +85,28 @@ desired `role` and `workspace_code`.
 Staff sign in with a username scoped to their workspace code; the app derives a
 synthetic auth email of the form
 `<username>@<workspace-code>.staff.eventpilot.internal`.
+
+## Customer user provisioning (`eventpilot-users`)
+
+The customer app can now create real login accounts in-app (Settings → User
+management) via the `eventpilot-users` edge function — the customer-plane
+analogue of `eventpilot-console`. Key differences:
+
+- It authenticates the **caller's own Supabase JWT** (`Authorization: Bearer`),
+  not a self-issued token: it validates the JWT with the service role, reads the
+  caller's `eventpilot_profiles` role, and only then acts.
+- Deployed with **verify_jwt off** (it authenticates callers itself).
+- Actions: `list_users`, `create_user`, `delete_user`. Permission model —
+  Top Management manages all three tiers; Managers may add/remove **Staff only**;
+  Staff cannot manage users. The last Top Management account cannot be deleted,
+  and callers cannot delete themselves.
+- On `create_user` it creates the `auth.users` row (Auth Admin API) with the
+  role/workspace/username in `user_metadata`; the `eventpilot_handle_new_user`
+  trigger mirrors those into a profile, and the function then upserts to stay
+  authoritative. It rolls back the auth user if the profile write fails.
+
+**BEO Viewers are NOT created here** — they are an app-layer roster (name +
+department) stored in `eventpilot_app_state`, signing in view-only through the
+"Department (BEO)" login tab. Editable **departments** and per-role
+**permission overrides** are likewise per-user synced app-state, edited in
+Settings by Top Management.

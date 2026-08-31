@@ -14,6 +14,112 @@ export type LineItem = {
   description: string
   quantity: number
   unitPrice: number
+  // Links back to the catalog product this item was added from, when it has
+  // multiple price options, so the chosen option can be edited later.
+  productId?: string
+  tierIndex?: number
+}
+
+/* ------------------------------------------------------------------ *
+ * Document revisions
+ *
+ * Proposals and agreements are external documents: once one has gone to
+ * the client, an edit is not an overwrite but a new numbered revision.
+ * Each save stores a full snapshot so Revision 1 can still be read back
+ * exactly as the client saw it.
+ * ------------------------------------------------------------------ */
+
+/** Everything the printed proposal renders, frozen at save time. */
+export type ProposalSnapshot = {
+  eventName: string
+  account: string
+  contact: string
+  eventType: string
+  packageName: string
+  venue: string
+  room: string
+  date: string
+  expectedGuests: number
+  depositDue: number
+  lineItems: LineItem[]
+  discount: Discount
+}
+
+export type ProposalRevision = {
+  id: string
+  number: number
+  savedAt: string
+  savedBy: string
+  note: string
+  snapshot: ProposalSnapshot
+}
+
+/** One numbered term on the agreement (scope, payment, cancellation, ...). */
+export type AgreementClause = {
+  id: string
+  heading: string
+  body: string
+}
+
+/** The editable body of the agreement, snapshot per revision. */
+export type AgreementContent = {
+  agreementNumber: string
+  issueDate: string
+  /** Venue side — seeded from the property profile / issuer settings. */
+  providerName: string
+  providerAddress: string
+  providerSignatory: string
+  providerSignatoryTitle: string
+  /** Client side — seeded from the booking's billing entity. */
+  clientName: string
+  clientAddress: string
+  clientTaxId: string
+  clientSignatory: string
+  clientSignatoryTitle: string
+  eventSummary: string
+  clauses: AgreementClause[]
+  paymentSchedule: string[]
+  cancellationPolicy: string[]
+  lineItems: LineItem[]
+  discount: Discount
+}
+
+export type AgreementRevision = {
+  id: string
+  number: number
+  savedAt: string
+  savedBy: string
+  note: string
+  snapshot: AgreementContent
+}
+
+export type AgreementStatus = 'Draft' | 'Sent for signature' | 'Signed'
+
+/**
+ * The countersigned agreement coming back from the client. Held inline as a
+ * data URL, matching how venue and dish photos are stored — the prototype has
+ * no storage bucket. Its presence, not the status flag, is the real proof.
+ */
+export type SignedAgreementFile = {
+  name: string
+  type: string
+  size: number
+  dataUrl: string
+  uploadedAt: string
+  uploadedBy: string
+}
+
+export type Agreement = {
+  status: AgreementStatus
+  createdAt: string
+  /** Which proposal revision this agreement was generated from. */
+  fromProposalRevision: number
+  sentAt: string | null
+  signedAt: string | null
+  signedFile?: SignedAgreementFile | null
+  content: AgreementContent
+  revision: number
+  revisions: AgreementRevision[]
 }
 
 export type DiscountMode = 'none' | 'percent' | 'value' | 'promo'
@@ -28,6 +134,38 @@ export type HistoryEntry = {
   id: string
   timestamp: string
   note: string
+}
+
+// BEO departments that receive their own instructions and sign-off. A view-only
+// "department" user is tied to one of these and acknowledges their section.
+// Departments are editable in Settings, so the type is an open string; the
+// constant below is only the default seed / fallback list.
+export type BeoDepartment = string
+
+export const BEO_DEPARTMENTS: BeoDepartment[] = [
+  'Front Office',
+  'House Keeping',
+  'Restaurant',
+  'Kitchen',
+  'Engineering',
+  'Accounting',
+  'HR',
+]
+
+export type DepartmentAck = {
+  by: string
+  at: string
+}
+
+// One recorded entry in a department's message timeline: either an instruction
+// that was submitted to the department, or that department's acknowledgement.
+export type DepartmentMessage = {
+  id: string
+  department: BeoDepartment
+  kind: 'instruction' | 'acknowledgement'
+  text: string
+  by: string
+  at: string
 }
 
 export type EventBooking = {
@@ -72,9 +210,138 @@ export type EventBooking = {
   discount?: Discount
   beoHistory?: HistoryEntry[]
   documentHistory?: HistoryEntry[]
+  // Proposal revision counter and the readable snapshot of each save.
+  proposalRevision?: number
+  proposalRevisions?: ProposalRevision[]
+  // Generated from an agreed proposal; carries its own revision history.
+  agreement?: Agreement
   billingCompany?: string
+  // Legal billing entity for the tax invoice, kept separate from the
+  // "bill to" routing above (Master Account, third-party sponsor, ...).
+  billingCompanyName?: string
+  billingAddress?: string
+  billingTaxId?: string
   paymentMethod?: string
   clientApprovedAt?: string
+  // Per-department BEO instructions and each department's acknowledgement.
+  departmentInstructions?: Partial<Record<BeoDepartment, string>>
+  departmentAcks?: Partial<Record<BeoDepartment, DepartmentAck>>
+  departmentMessages?: DepartmentMessage[]
+  // Which track this booking came from; drives BEOs vs Group Resume listing.
+  leadType?: LeadType
+  // Only populated on the Group Resume track, on first open of the document.
+  groupResume?: GroupResume
+  // Set once the job is closed out after the event; absence means still open.
+  closure?: JobClosure
+}
+
+/* ------------------------------------------------------------------ *
+ * Group resume
+ *
+ * The internal multi-day group document: a memo header, the group's own
+ * details, a day-by-day itinerary, the rooming list, the functions it
+ * contains, and the revenue summary with payment / billing instructions.
+ * Mirrors the resort's existing printed group resume layout.
+ * ------------------------------------------------------------------ */
+
+export type GroupResumeItineraryItem = {
+  id: string
+  /** Free text so "09:00hrs", "Morning", or an empty cell all work. */
+  time: string
+  detail: string
+  /** Rendered italic/blue on the printed sheet, for advisory notes. */
+  emphasis?: boolean
+}
+
+export type GroupResumeDay = {
+  id: string
+  label: string
+  date: string
+  location: string
+  items: GroupResumeItineraryItem[]
+  overnight: string
+}
+
+export type GroupResumeGuest = {
+  id: string
+  title: string
+  firstName: string
+  middleName: string
+  lastName: string
+  passportNumber: string
+  checkIn: string
+  checkOut: string
+  nights: number
+  note: string
+}
+
+export type GroupResumeFunction = {
+  id: string
+  name: string
+  date: string
+  venue: string
+  notes: string
+}
+
+/**
+ * One row of the revenue summary. `kind: 'heading'` renders a full-width
+ * band ("Function - 12 MAY 2025"); `kind: 'line'` is a costed row where any
+ * of room / night / pax may be blank.
+ */
+export type GroupResumeRevenueRow = {
+  id: string
+  kind: 'heading' | 'line'
+  details: string
+  rate: number | null
+  rooms: number | null
+  nights: number | null
+  pax: number | null
+  total: number
+}
+
+export type GroupResume = {
+  issueDate: string
+  updated: boolean
+  subject: string
+  from: string
+  to: string[]
+  cc: string[]
+  intro: string
+  groupName: string
+  organizer: string
+  leaderName: string
+  leaderPhone: string
+  leaderEmail: string
+  checkIn: string
+  checkOut: string
+  groupSize: string
+  roomCount: string
+  profile: string
+  days: GroupResumeDay[]
+  guests: GroupResumeGuest[]
+  roomRate: string
+  roomBenefits: string[]
+  functions: GroupResumeFunction[]
+  revenueRows: GroupResumeRevenueRow[]
+  paymentNotes: string[]
+  billingInstructions: string[]
+  closingNote: string
+  preparedBy: string
+  preparedByTitle: string
+  revision: number
+}
+
+/**
+ * Closing a job is the end of the operational flow: the event has happened,
+ * the final numbers are known, and nothing further is expected of it.
+ */
+export type JobClosure = {
+  closedAt: string
+  closedBy: string
+  actualGuests: number
+  finalRevenue: number
+  outstandingBalance: number
+  notes: string
 }
 
 export type Account = {
@@ -93,9 +360,72 @@ export type Account = {
   behavior: string
   leadSource: string
   notes: string
+  // Optional because the seeded profiles predate them; everything below is
+  // captured by the "New customer profile" form and shown on the profile.
+  contactRole?: string
+  altContact?: string
+  altContactPhone?: string
+  // Legal billing entity, so a booking raised for this customer can inherit the
+  // details a Thai tax invoice needs instead of re-typing them per event.
+  billingCompanyName?: string
+  billingTaxId?: string
+  billingAddress?: string
+  paymentTerms?: string
+  createdAt?: string
 }
 
+/** Suggested customer categories. The field stays free text, so this is a
+ * datalist of common values rather than a closed enum. */
+export const ACCOUNT_TYPES = [
+  'Corporate',
+  'Association',
+  'Government',
+  'Embassy / Consulate',
+  'Travel trade',
+  'Wedding / Social',
+  'Education',
+  'Non-profit',
+  'Agency / Event planner',
+]
+
+/** Suggested lead sources, shared by the CRM profile form. */
+export const LEAD_SOURCES = [
+  'Website inquiry',
+  'Phone inquiry',
+  'Walk-in',
+  'Repeat corporate account',
+  'Association renewal',
+  'Planner referral',
+  'Past guest referral',
+  'Travel agent',
+  'Social media',
+  'Trade show',
+]
+
+/** Suggested payment terms for the billing block. */
+export const PAYMENT_TERMS = [
+  'Full prepayment',
+  '50% deposit, balance on the event day',
+  '30% deposit, balance 7 days before',
+  'Credit 15 days',
+  'Credit 30 days',
+  'Credit 60 days',
+]
+
 export type LeadStage = 'New' | 'Contacted' | 'Qualified' | 'Proposal Sent' | 'Won' | 'Lost'
+
+// A lead is worked as one of two document tracks: a single-function event that
+// ends in a BEO, or a multi-day group that ends in a group resume.
+export type LeadType = 'BEO' | 'Group Resume'
+
+export const LEAD_TYPES: LeadType[] = ['BEO', 'Group Resume']
+
+export type FollowUp = {
+  id: string
+  timestamp: string
+  note: string
+  author: string
+}
 
 export type Lead = {
   id: string
@@ -106,12 +436,20 @@ export type Lead = {
   source: string
   category: string
   stage: LeadStage
+  leadType?: LeadType
   estimatedValue: number
   owner: string
   lostReason?: string
   createdAt: string
+  updatedAt?: string
   notes: string
+  followUps?: FollowUp[]
   history: HistoryEntry[]
+}
+
+export type PriceTier = {
+  label?: string
+  price: number
 }
 
 export type Product = {
@@ -125,8 +463,14 @@ export type Product = {
   availability: string
   displayOnBeo: boolean
   displayPrice: boolean
-  tags: string[]
+  // Optional structured detail used by the catalogue cards: a checklist of
+  // what a package includes, and selectable price tiers for menus / durations.
+  inclusions?: string[]
+  priceTiers?: PriceTier[]
   sourceUrl?: string
+  // Client-facing dish photos for the Venue & Menu presentation view, stored
+  // inline as data URLs like the venue photos — no file bucket needed.
+  photos?: string[]
 }
 
 export type Venue = {
@@ -140,6 +484,10 @@ export type Venue = {
   serviceHours?: string
   sourceUrl?: string
   notes?: string
+  // Client-facing content for the Venue & Menu presentation view: a sales
+  // pitch description and photos (stored inline as data URLs, no file bucket).
+  description?: string
+  photos?: string[]
 }
 
 export type Task = {
@@ -252,6 +600,14 @@ export const initialBookings: EventBooking[] = [
       { id: 'BKG-2401-DH2', timestamp: '2026-05-12', note: 'Sent to client' },
       { id: 'BKG-2401-DH3', timestamp: '2026-05-30', note: 'Line items updated' },
     ],
+    departmentInstructions: {
+      'Front Office': 'VIP entrance at north lobby; brief bell desk to escort the CEO party. Discreet, quick check-in.',
+      Kitchen: 'Royal Thai set menu for 165 guaranteed. No-pork table for 24 guests — clearly labelled. Final count review by 14:00.',
+      Restaurant: 'Coffee and petit fours at close. Wine service paced to the CEO speech transition; keep pours discreet.',
+      Engineering: 'Wireless microphones, LED wall, and podium uplight tested by 17:00. Standby technician during speeches.',
+      'House Keeping': 'Ballroom A deep-cleaned pre-set; refresh restrooms at 20:00. Reset room after teardown at 23:00.',
+      Accounting: 'Partial payment approved by finance. Issue final invoice after beverage actuals are confirmed.',
+    },
   },
   {
     id: 'BKG-2402',
@@ -472,6 +828,14 @@ export const accounts: Account[] = [
     behavior: 'Fast approver after finance receives itemized proforma.',
     leadSource: 'Repeat corporate account',
     notes: 'Prefers precise run sheets and low-profile VIP handling.',
+    contactRole: 'Head of Corporate Communications',
+    altContact: 'Praew T.',
+    altContactPhone: '+66 81 555 0177',
+    billingCompanyName: 'Siam Retail Group Co., Ltd.',
+    billingTaxId: '0105539000001',
+    billingAddress: '188 Rama I Road, Pathum Wan, Bangkok 10330',
+    paymentTerms: 'Credit 30 days',
+    createdAt: '2024-02-14',
   },
   {
     id: 'ACC-02',
@@ -489,6 +853,12 @@ export const accounts: Account[] = [
     behavior: 'Compares AV line items closely and asks for visual mockups.',
     leadSource: 'Website inquiry',
     notes: 'Potential high-value tech account if launch is successful.',
+    contactRole: 'Marketing Manager',
+    billingCompanyName: 'LannaTech Co., Ltd.',
+    billingTaxId: '0505561000123',
+    billingAddress: '55/2 Huay Kaew Road, Suthep, Mueang Chiang Mai 50200',
+    paymentTerms: '50% deposit, balance on the event day',
+    createdAt: '2026-05-18',
   },
   {
     id: 'ACC-03',
@@ -506,6 +876,14 @@ export const accounts: Account[] = [
     behavior: 'Renews annually when session timing and AV reliability are strong.',
     leadSource: 'Association renewal',
     notes: 'Requires strong speaker-room coordination.',
+    contactRole: 'Conference Chair',
+    altContact: 'Somchai P.',
+    altContactPhone: '+66 83 900 4412',
+    billingCompanyName: 'Northern Medical Association',
+    billingTaxId: '0993000112233',
+    billingAddress: '110 Sirimangkalajarn Road, Suthep, Mueang Chiang Mai 50200',
+    paymentTerms: '30% deposit, balance 7 days before',
+    createdAt: '2023-08-01',
   },
 ]
 
@@ -603,130 +981,518 @@ export const leads: Lead[] = [
 ]
 
 export const products: Product[] = [
+  // ── Wedding packages (Na Nirand Signature Wedding Package 2026) ──
   {
-    id: 'PRD-01',
-    name: 'Executive Thai Banquet',
+    id: 'PRD-W01',
+    name: 'Pre-Wedding Photoshooting',
     category: 'Package',
-    description: 'Premium Thai set menu with coffee service and standard banquet staffing.',
-    price: 1900,
-    unit: 'per person',
-    cost: 980,
+    description: 'Pre-wedding photoshoot session at the resort.',
+    price: 15000,
+    unit: 'net',
+    cost: null,
     availability: 'Available',
     displayOnBeo: true,
-    displayPrice: false,
-    tags: ['corporate', 'thai', 'vip'],
+    displayPrice: true,
+    inclusions: [
+      '5 hours pre-wedding venue photoshoot',
+      'Day-use resort room for changing and preparation',
+    ],
   },
   {
-    id: 'PRD-02',
-    name: 'Launch Half-Day Package',
+    id: 'PRD-W02',
+    name: 'Lanna Wedding',
     category: 'Package',
-    description: 'Morning launch package with stage support, coffee break, and lunch.',
-    price: 1600,
-    unit: 'per person',
-    cost: 820,
-    availability: 'Limited',
-    displayOnBeo: true,
-    displayPrice: true,
-    tags: ['launch', 'av-heavy', 'press'],
-  },
-  {
-    id: 'PRD-03',
-    name: 'Hybrid Meeting Kit',
-    category: 'AV',
-    description: 'Camera, audio bridge, capture card, and technician support.',
-    price: 18000,
-    unit: 'per event',
-    cost: 6500,
-    availability: '2 kits left',
-    displayOnBeo: true,
-    displayPrice: true,
-    tags: ['conference', 'hybrid'],
-  },
-  {
-    id: 'PRD-04',
-    name: 'Seafood Buffet Upgrade',
-    category: 'Food',
-    description: 'Live seafood station upgrade for weddings and gala dinners.',
-    price: 650,
-    unit: 'per person',
-    cost: 390,
+    description: 'Traditional Thai (Lanna) wedding ceremony.',
+    price: 128888,
+    unit: 'net',
+    cost: null,
     availability: 'Available',
     displayOnBeo: true,
-    displayPrice: false,
-    tags: ['wedding', 'premium'],
+    displayPrice: true,
+    inclusions: [
+      'Back drop with floral arch',
+      "Traditional 'Khan Mak' set",
+      'Bai Sri set with wrist binding or water blessing set or Chinese tea ceremony',
+      'Traditional Thai wedding ceremony set up',
+      '30-min Lanna blessing by master of ceremony',
+      'Floral neck garland for bride & groom',
+      'Personalized wedding couple name or welcome signage',
+      "Groom's boutonniere",
+      'Bridal bouquet',
+      '4 corsages for parents of bride and groom',
+      'Decorated registration desk, blessing book and money box',
+      'In-house sound system with background music',
+      'One-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two',
+      'Complimentary honeymoon set up in room',
+      'Complimentary 1 bottle of Sparkling Wine',
+      'Herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee)',
+    ],
   },
   {
-    id: 'PRD-NN-01',
-    name: 'Na Nirand Wedding & Honeymoon Package',
+    id: 'PRD-W03',
+    name: 'Buddhist Ceremony — 5 Monks',
     category: 'Package',
+    description: 'Buddhist wedding blessing ceremony with 5 monks.',
+    price: 19888,
+    unit: 'net',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    inclusions: [
+      'Buddha image and flower decoration at altar',
+      'Inviting 5 monks and master of ceremony for blessing',
+      'Set up venue with equipment',
+      'Thai set menu in Lanna Tiffin Carrier and offering set for monks and master of ceremony',
+    ],
+  },
+  {
+    id: 'PRD-W04',
+    name: 'Buddhist Ceremony — 9 Monks',
+    category: 'Package',
+    description: 'Buddhist wedding blessing ceremony with 9 monks.',
+    price: 38888,
+    unit: 'net',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    inclusions: [
+      'Buddha image and flower decoration at altar',
+      'Inviting 9 monks and master of ceremony for blessing',
+      'Set up venue with equipment',
+      'Thai set menu in Lanna Tiffin Carrier and offering set for monks and master of ceremony',
+    ],
+  },
+  {
+    id: 'PRD-W05',
+    name: 'Western Wedding',
+    category: 'Package',
+    description: 'Western-style wedding ceremony.',
+    price: 128888,
+    unit: 'net',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    inclusions: [
+      'Back drop with floral arch',
+      'Personalized welcome signage',
+      '6 floral along the aisle',
+      '2 floral stands at the entrance',
+      "Groom's boutonniere",
+      'Bridal bouquet',
+      '6 corsages for best men and 4 corsages for bridesmaid',
+      '4 corsages for parents of bride and groom',
+      '8 sets of baskets of flower petals',
+      'Decorated registration desk and blessing book',
+      'In-house sound system with background music',
+      'One-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two',
+      'Complimentary honeymoon set up in room',
+      'Complimentary 1 bottle of Sparkling Wine',
+      'Herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee)',
+    ],
+  },
+  {
+    id: 'PRD-W06',
+    name: 'Wedding Reception Decoration',
+    category: 'Package',
+    description: 'Full wedding reception decoration package.',
+    price: 168888,
+    unit: 'net',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    inclusions: [
+      'Back drop with floral arch',
+      'Welcome floral backdrop',
+      'Personalized welcome signage',
+      '8 floral along the aisle',
+      '2 floral stands at the entrance',
+      "Groom's boutonniere",
+      'Bridal bouquet',
+      'Floral neck garland for bride & groom (Thai style ceremony)',
+      '3-tiers (ten-pound) wedding cake with flower decoration',
+      'Champagne tower with flower decoration',
+      '4 corsages for parents of bride and groom',
+      'Decorated registration desk, blessing book and money box',
+      "Floral decoration for the bride & groom's seats",
+      'Standard flower vases on dining table',
+      'In-house sound system with background music',
+      'Two-night stay in Romantic Lanna Royal deluxe incl. in-room breakfast for two',
+      'Complimentary honeymoon set up in room',
+      'Complimentary 1 bottle of Champagne',
+      'Herbal refreshments for 50 guests during the ceremony (additional guests subject to extra fee)',
+    ],
+  },
+
+  // ── Venue rental (applied when no wedding package is taken) ──
+  {
+    id: 'PRD-R01',
+    name: 'TIME Riverfront Cuisine & Bar',
+    category: 'Venue rental',
     description:
-      'Romantic wedding or honeymoon experience using garden, Lanna house, rice barn, riverfront dining, and optional resort activities.',
-    price: null,
-    unit: 'quote required',
+      'Venue rental fee (applied if no wedding package is taken). Or minimum revenue THB 150,000 net; maximum 5 hours per booking.',
+    price: 80000,
+    unit: 'net',
     cost: null,
-    availability: 'Sales confirmation required',
+    availability: 'By reservation',
     displayOnBeo: true,
-    displayPrice: false,
-    tags: ['nanirand', 'wedding', 'honeymoon', 'lanna'],
-    sourceUrl: 'https://nanirand.com/events',
+    displayPrice: true,
   },
   {
-    id: 'PRD-NN-02',
-    name: 'Signature Afternoon Tea',
-    category: 'Dining',
-    description: 'Publicly listed afternoon tea experience served daily from 11:00 to 17:00.',
-    price: null,
-    unit: 'quote required',
-    cost: null,
-    availability: 'Daily 11:00-17:00',
-    displayOnBeo: true,
-    displayPrice: false,
-    tags: ['nanirand', 'afternoon tea', 'upsell'],
-    sourceUrl: 'https://nanirand.com/dining',
-  },
-  {
-    id: 'PRD-NN-03',
-    name: 'Glasshouse Dinner',
-    category: 'Dining',
+    id: 'PRD-R02',
+    name: 'Glass House',
+    category: 'Venue rental',
     description:
-      'Glasshouse dining option at TIME Riverfront Cuisine & Bar with 360-degree views.',
-    price: null,
-    unit: 'quote required',
+      'Venue rental fee (applied if no wedding package is taken). Or minimum revenue THB 80,000 net.',
+    price: 50000,
+    unit: 'net',
     cost: null,
-    availability: 'Daily 17:00-22:30',
+    availability: 'By reservation',
     displayOnBeo: true,
-    displayPrice: false,
-    tags: ['nanirand', 'glasshouse', 'dinner'],
-    sourceUrl: 'https://nanirand.com/dining',
+    displayPrice: true,
   },
   {
-    id: 'PRD-NN-04',
-    name: 'Candle Light Dinner',
-    category: 'Dining',
-    description: 'Romantic dinner experience promoted for couples, honeymoons, and anniversaries.',
-    price: null,
-    unit: 'quote required',
+    id: 'PRD-R03',
+    name: 'Huan Kammung',
+    category: 'Venue rental',
+    description: 'Venue rental fee (applied if no wedding package is taken).',
+    price: 35000,
+    unit: 'net',
     cost: null,
-    availability: 'Daily 17:00-22:30',
+    availability: 'By reservation',
     displayOnBeo: true,
-    displayPrice: false,
-    tags: ['nanirand', 'romantic dinner', 'anniversary'],
-    sourceUrl: 'https://nanirand.com/dining',
+    displayPrice: true,
   },
   {
-    id: 'PRD-NN-05',
-    name: 'Na Nirand Spa Add-on',
-    category: 'Spa',
+    id: 'PRD-R04',
+    name: 'The Garden of Eternal Love',
+    category: 'Venue rental',
+    description: 'Venue rental fee (applied if no wedding package is taken).',
+    price: 65000,
+    unit: 'net',
+    cost: null,
+    availability: 'By reservation',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+
+  // ── Food & Beverage — menus (per person; three tiers to choose) ──
+  {
+    id: 'PRD-F01',
+    name: 'Coffee Break',
+    category: 'Food & Beverage',
+    description: 'Coffee break menu — choose a tier.',
+    price: 550,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 550 }, { price: 750 }, { price: 1000 }],
+  },
+  {
+    id: 'PRD-F02',
+    name: 'Kad Mua',
+    category: 'Food & Beverage',
+    description: 'Kad Mua (Lanna market-style) menu — choose a tier.',
+    price: 850,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 850 }, { price: 1000 }, { price: 1200 }],
+  },
+  {
+    id: 'PRD-F03',
+    name: 'Cocktail',
+    category: 'Food & Beverage',
+    description: 'Cocktail reception menu — choose a tier.',
+    price: 850,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 850 }, { price: 1000 }, { price: 1400 }],
+  },
+  {
+    id: 'PRD-F04',
+    name: 'Set Menu — Thai Set',
+    category: 'Food & Beverage',
+    description: 'Plated Thai set menu — choose a tier.',
+    price: 1200,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 1200 }, { price: 1500 }, { price: 1800 }],
+  },
+  {
+    id: 'PRD-F05',
+    name: 'Set Menu — East Meets West Set',
+    category: 'Food & Beverage',
+    description: 'Plated East-meets-West set menu — choose a tier.',
+    price: 1500,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 1500 }, { price: 1800 }, { price: 2100 }],
+  },
+  {
+    id: 'PRD-F06',
+    name: 'Set Menu — Western Set',
+    category: 'Food & Beverage',
+    description: 'Plated Western set menu — choose a tier.',
+    price: 1700,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 1700 }, { price: 2000 }, { price: 2300 }],
+  },
+  {
+    id: 'PRD-F07',
+    name: 'Buffet — Thai Buffet',
+    category: 'Food & Beverage',
+    description: 'Thai buffet (minimum 50 persons) — choose a tier.',
+    price: 1100,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Minimum 50 persons',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 1100 }, { price: 1300 }, { price: 1500 }],
+  },
+  {
+    id: 'PRD-F08',
+    name: 'Buffet — International Buffet',
+    category: 'Food & Beverage',
+    description: 'International buffet (minimum 50 persons) — choose a tier.',
+    price: 1200,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Minimum 50 persons',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [{ price: 1200 }, { price: 1500 }, { price: 1800 }],
+  },
+
+  // ── Food & Beverage — beverage packages (choose duration / option) ──
+  {
+    id: 'PRD-B01',
+    name: 'Free Flow — Soft Drinks',
+    category: 'Beverage',
+    description: 'Free flow soft drinks: Coke, Sprite, ginger ale, tonic, soda, pouring water.',
+    price: 150,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [
+      { label: '1 hour', price: 150 },
+      { label: '2 hours', price: 270 },
+      { label: '3 hours', price: 360 },
+    ],
+  },
+  {
+    id: 'PRD-B02',
+    name: 'Free Flow — Soft Drinks, Fruit Juices & Local Beers',
+    category: 'Beverage',
+    description: 'Adds orange/apple/pineapple juice and Chang/Singha local beer.',
+    price: 500,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [
+      { label: '1 hour', price: 500 },
+      { label: '2 hours', price: 800 },
+      { label: '3 hours', price: 1050 },
+    ],
+  },
+  {
+    id: 'PRD-B03',
+    name: 'Free Flow — Soft Drinks, Fruit Juices, Local Beers & House Wine',
+    category: 'Beverage',
+    description: 'Adds house wine to the free-flow selection.',
+    price: 1000,
+    unit: 'net per person',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [
+      { label: '1 hour', price: 1000 },
+      { label: '2 hours', price: 1600 },
+      { label: '3 hours', price: 2100 },
+    ],
+  },
+  {
+    id: 'PRD-B04',
+    name: 'Standard Open Bar',
+    category: 'Beverage',
     description:
-      'Two-treatment-room Lanna-style spa add-on for wedding, honeymoon, and leisure itineraries.',
-    price: null,
-    unit: 'quote required',
+      'Soft drinks, fruit juice, local beer, house wine, whisky, vodka, tequila, gin and rum.',
+    price: 1200,
+    unit: 'net per person',
     cost: null,
-    availability: 'Daily 10:00-21:00',
+    availability: 'Available',
     displayOnBeo: true,
-    displayPrice: false,
-    tags: ['nanirand', 'spa', 'honeymoon'],
-    sourceUrl: 'https://nanirand.com/service-%26-facilities',
+    displayPrice: true,
+    priceTiers: [
+      { label: '1 hour', price: 1200 },
+      { label: '2 hours', price: 1900 },
+      { label: '3 hours', price: 2500 },
+    ],
+  },
+  {
+    id: 'PRD-B05',
+    name: 'Draft Beer — Chang (30L keg)',
+    category: 'Beverage',
+    description: '30 liters, approx. 80 glasses.',
+    price: 9000,
+    unit: 'net per keg',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-B06',
+    name: 'Draft Beer — Singha (30L keg)',
+    category: 'Beverage',
+    description: '30 liters, approx. 80 glasses.',
+    price: 10000,
+    unit: 'net per keg',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-B07',
+    name: 'Draft Beer — Heineken (30L keg)',
+    category: 'Beverage',
+    description: '30 liters, approx. 80 glasses.',
+    price: 11000,
+    unit: 'net per keg',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-B08',
+    name: 'Corkage — Wine & Spirit',
+    category: 'Beverage',
+    description: 'Corkage charge for guest-supplied wine and spirit.',
+    price: 500,
+    unit: 'net per bottle',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-B09',
+    name: 'Corkage — Champagne',
+    category: 'Beverage',
+    description: 'Corkage charge for guest-supplied champagne.',
+    price: 1000,
+    unit: 'net per bottle',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-B10',
+    name: 'Corkage Package',
+    category: 'Beverage',
+    description: 'Flat corkage by volume of bottles brought in.',
+    price: 3000,
+    unit: 'net per event',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+    priceTiers: [
+      { label: '1–12 bottles', price: 3000 },
+      { label: '13–24 bottles', price: 5000 },
+      { label: '24+ bottles', price: 10000 },
+    ],
+  },
+
+  // ── Additional services ──
+  {
+    id: 'PRD-S01',
+    name: 'Bulb Lighting at Lawn Area',
+    category: 'Add-on service',
+    description: 'Decorative bulb lighting installed across the lawn area.',
+    price: 8000,
+    unit: 'net',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-S02',
+    name: 'Duo Band',
+    category: 'Add-on service',
+    description: 'Live duo band performance.',
+    price: 25000,
+    unit: 'net / 3 hours',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-S03',
+    name: 'Trio Band',
+    category: 'Add-on service',
+    description: 'Live trio band performance.',
+    price: 30000,
+    unit: 'net / 3 hours',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-S04',
+    name: 'Quartet Band',
+    category: 'Add-on service',
+    description: 'Live quartet band performance.',
+    price: 35000,
+    unit: 'net / 3 hours',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
+  },
+  {
+    id: 'PRD-S05',
+    name: 'MC and Event Sequence Run',
+    category: 'Add-on service',
+    description: 'Master of ceremony and event sequence run-through / coordination.',
+    price: 15000,
+    unit: 'net',
+    cost: null,
+    availability: 'Available',
+    displayOnBeo: true,
+    displayPrice: true,
   },
 ]
 
