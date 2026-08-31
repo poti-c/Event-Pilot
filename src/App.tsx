@@ -189,6 +189,23 @@ function visibleNavItems(role: AuthRole): NavItem[] {
   })
 }
 
+// The sidebar only renders the nav items a role may see, but the hash router
+// accepts any module id, so the same rule has to gate the route as well —
+// otherwise a denied module (e.g. #Reports for Staff) is one address-bar edit
+// away. Settings is deliberately always reachable: it is opened from the
+// sidebar footer rather than the nav list, and every panel inside it applies
+// its own per-role check.
+function isModuleAllowed(role: AuthRole, module: ModuleId): boolean {
+  if (module === 'Login' || module === 'Settings') return true
+  if (module === 'NewBooking') return hasPermission(role, 'booking:create')
+  return visibleNavItems(role).some((item) => item.id === module)
+}
+
+// Where a role lands when the module it asked for is not one it may open.
+function fallbackModule(role: AuthRole): ModuleId {
+  return visibleNavItems(role)[0]?.id ?? 'Settings'
+}
+
 const moduleIds: ModuleId[] = [
   ...navItems.map((item) => item.id),
   'Login',
@@ -272,9 +289,31 @@ function readLocal<T>(key: string, initialValue: T): T {
   }
 }
 
-function writeLocal<T>(key: string, value: T) {
-  window.localStorage.setItem(key, JSON.stringify(value))
+function writeLocal<T>(key: string, value: T): boolean {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+    return true
+  } catch (error) {
+    // Quota exceeded (a large inline upload pushes the bookings blob past the
+    // ~5 MB per-origin budget), or storage blocked by the browser. This runs
+    // inside a setState updater and there is no error boundary in the app, so
+    // throwing here would blank the whole page. The cloud upsert is the real
+    // persistence path — log, report, and carry on.
+    console.error(`Event Pilot could not cache ${key} locally:`, error)
+    return false
+  }
 }
+
+// Largest countersigned agreement accepted for inline storage. See
+// handleSignedFile: the file is held as a base64 data URL on the booking.
+const SIGNED_AGREEMENT_MAX_BYTES = 1024 * 1024
+
+// How hard useSyncedState tries to read a key's remote row before giving up.
+// Giving up leaves write-through disabled — edits stay in the local cache and
+// are never pushed — which is the safe failure mode: it cannot overwrite a row
+// we were unable to read.
+const HYDRATION_ATTEMPTS = 5
+const HYDRATION_RETRY_MS = 4000
 
 /**
  * App-state hook that persists to Supabase (per authenticated user) with a
@@ -292,16 +331,66 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
   // (no Supabase / no userId) keeps the bare key so existing sandbox data loads.
   const scopedKey = supabase && userId ? `${key}::${userId}` : key
   const [value, setValue] = useState<T>(() => readLocal(scopedKey, initialValue))
+  // Write-through gate: set only once this user's remote row has actually been
+  // read (or created). A failed read must NOT set it, or the next edit would
+  // upsert seed/stale data over the row we never managed to read.
   const hydratedFor = useRef<string | null>(null)
+  // Which principal the value currently in memory belongs to. Tracked
+  // separately from hydratedFor so a signed-out or non-Supabase session can be
+  // detected even when hydration never completed.
+  const loadedFor = useRef<string | null>(null)
+  // Bumped to retry a hydration read that failed, up to HYDRATION_ATTEMPTS.
+  const [hydrationAttempt, setHydrationAttempt] = useState(0)
+  // The app is interactive while hydration is in flight. If the user edits in
+  // that window their change is newer than whatever the read returns, so it
+  // must win instead of being silently overwritten by the incoming row.
+  const mutatedBeforeHydration = useRef(false)
+  // Latest resolved value, readable from the async hydration callback without
+  // taking a stale closure over `value`.
+  const latestValue = useRef(value)
+
+  const pushRemote = useCallback(
+    async (next: T) => {
+      if (!supabase || !userId) return
+      const { error } = await supabase
+        .from('eventpilot_app_state')
+        .upsert({ user_id: userId, key, value: next })
+      if (error) console.error(`Event Pilot sync failed for ${key}:`, error.message)
+    },
+    [key, userId],
+  )
 
   useEffect(() => {
-    if (!supabase || !userId || hydratedFor.current === userId) return
+    if (!supabase) return
+
+    if (!userId) {
+      // Signed out, or a session with no Supabase principal (a department/BEO
+      // viewer). Drop whatever the previous account hydrated instead of leaving
+      // it in memory for whoever appears next — App never unmounts, so nothing
+      // else clears it.
+      if (loadedFor.current !== null) {
+        loadedFor.current = null
+        hydratedFor.current = null
+        mutatedBeforeHydration.current = false
+        latestValue.current = readLocal(scopedKey, initialValue)
+        setValue(latestValue.current)
+      }
+      return
+    }
+
+    if (hydratedFor.current === userId) return
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     // A (different) user just signed in — drop any state still held from a
     // previous account before hydrating, so their data is never displayed or
     // written under this user.
-    setValue(readLocal(scopedKey, initialValue))
+    if (loadedFor.current !== userId) {
+      loadedFor.current = userId
+      mutatedBeforeHydration.current = false
+      latestValue.current = readLocal(scopedKey, initialValue)
+      setValue(latestValue.current)
+    }
 
     void (async () => {
       const { data, error } = await supabase
@@ -313,23 +402,64 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
       if (cancelled) return
 
       if (data && data.value != null) {
-        setValue(data.value as T)
+        hydratedFor.current = userId
+        if (mutatedBeforeHydration.current) {
+          // The user changed this key while the read was in flight. Keep their
+          // edit and push it up, rather than reverting work that has so far
+          // reached neither the server nor (necessarily) the cache.
+          mutatedBeforeHydration.current = false
+          void pushRemote(latestValue.current)
+          return
+        }
+        latestValue.current = data.value as T
+        setValue(latestValue.current)
         writeLocal(scopedKey, data.value)
-      } else if (!error) {
-        // No remote row yet — seed from the pristine initial value, never from
-        // another user's cached data.
-        writeLocal(scopedKey, initialValue)
-        await supabase
-          .from('eventpilot_app_state')
-          .upsert({ user_id: userId, key, value: initialValue })
+        return
+      }
+
+      if (error) {
+        // The remote row was never read, so we cannot tell an empty account
+        // from an unreachable one. Leave write-through disabled (the local
+        // cache still works) and retry, rather than treating the seed data in
+        // memory as authoritative and upserting it over the user's real row.
+        console.error(
+          `Event Pilot could not load ${key} (attempt ${hydrationAttempt + 1}):`,
+          error.message,
+        )
+        if (hydrationAttempt + 1 < HYDRATION_ATTEMPTS) {
+          retryTimer = setTimeout(
+            () => setHydrationAttempt((attempt) => attempt + 1),
+            HYDRATION_RETRY_MS,
+          )
+        }
+        return
+      }
+
+      // No remote row yet — seed from the pristine initial value, never from
+      // another user's cached data. An edit made while the read was in flight
+      // is already newer than that seed, so it is what gets written.
+      const seedValue = mutatedBeforeHydration.current
+        ? latestValue.current
+        : initialValue
+      mutatedBeforeHydration.current = false
+      writeLocal(scopedKey, seedValue)
+      const { error: seedError } = await supabase
+        .from('eventpilot_app_state')
+        .upsert({ user_id: userId, key, value: seedValue })
+      if (cancelled) return
+      // Only open write-through once the row genuinely exists remotely.
+      if (seedError) {
+        console.error(`Event Pilot could not seed ${key}:`, seedError.message)
+        return
       }
       hydratedFor.current = userId
     })()
 
     return () => {
       cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [key, scopedKey, userId, initialValue])
+  }, [key, scopedKey, userId, initialValue, hydrationAttempt, pushRemote])
 
   const setStoredValue = useCallback(
     (nextValue: T | ((currentValue: T) => T)) => {
@@ -339,22 +469,25 @@ function useSyncedState<T>(key: string, initialValue: T, userId: string | null) 
             ? (nextValue as (currentValue: T) => T)(currentValue)
             : nextValue
 
+        latestValue.current = resolved
         writeLocal(scopedKey, resolved)
         // Only write through to the cloud once this user's remote state has
         // hydrated, so a pre-hydration render can't clobber their row with
         // defaults or another account's leftover values.
-        if (supabase && userId && hydratedFor.current === userId) {
-          void supabase
-            .from('eventpilot_app_state')
-            .upsert({ user_id: userId, key, value: resolved })
-            .then(({ error }) => {
-              if (error) console.error(`Event Pilot sync failed for ${key}:`, error.message)
-            })
+        if (supabase && userId) {
+          if (hydratedFor.current === userId) {
+            void pushRemote(resolved)
+          } else {
+            // Hydration is still in flight (or failed). Remember that this key
+            // now holds a real user edit so hydration keeps it instead of
+            // overwriting it with the incoming row.
+            mutatedBeforeHydration.current = true
+          }
         }
         return resolved
       })
     },
-    [key, scopedKey, userId],
+    [scopedKey, userId, pushRemote],
   )
 
   return [value, setStoredValue] as const
@@ -606,6 +739,10 @@ type AuthState = {
   displayName: string
   workspaceCode: string
   ready: boolean
+  // Set when a signed-in account has no readable eventpilot_profiles row. The
+  // tier is then unknown, so the app must refuse the session rather than run it
+  // on the default role.
+  profileError: string
   setDisplayName: (name: string) => void
 }
 
@@ -616,16 +753,17 @@ function useSupabaseAuth(): AuthState {
   const [displayName, setDisplayName] = useState('')
   const [workspaceCode, setWorkspaceCode] = useState('')
   const [ready, setReady] = useState(!isSupabaseEnabled)
+  const [profileError, setProfileError] = useState('')
 
   useEffect(() => {
     if (!supabase) return
     let active = true
     const client = supabase
 
-    // Applies a session and (asynchronously) resolves the user's profile. All
-    // setState calls happen inside async callbacks, never synchronously in the
-    // effect body.
-    const applySession = (next: Session | null) => {
+    // Applies a session and resolves the user's profile. All setState calls
+    // happen inside async callbacks, never synchronously in the effect body.
+    // Awaited by the caller so `ready` cannot flip before the role is known.
+    const applySession = async (next: Session | null) => {
       if (!active) return
       setSession(next)
       const uid = next?.user?.id
@@ -633,30 +771,41 @@ function useSupabaseAuth(): AuthState {
         setRole('staff')
         setDisplayName('')
         setWorkspaceCode('')
+        setProfileError('')
         return
       }
-      void client
+      const { data, error } = await client
         .from('eventpilot_profiles')
         .select('role, display_name, workspace_code')
         .eq('user_id', uid)
         .maybeSingle()
-        .then(({ data }) => {
-          if (!active) return
-          const nextRole = data?.role as AuthRole | undefined
-          if (nextRole && AUTH_ROLES.includes(nextRole)) {
-            setRole(nextRole)
-          }
-          setDisplayName((data?.display_name as string | null) ?? '')
-          setWorkspaceCode((data?.workspace_code as string | null) ?? '')
-        })
+      if (!active) return
+      const nextRole = data?.role as AuthRole | undefined
+      if (nextRole && AUTH_ROLES.includes(nextRole)) {
+        setRole(nextRole)
+        setProfileError('')
+      } else {
+        // The account's tier is unknowable. Defaulting to 'staff' would hand a
+        // real account the wrong permission set for the entire session with no
+        // indication anything went wrong, so refuse the session instead.
+        setRole('staff')
+        setProfileError(
+          error
+            ? `Your profile could not be loaded: ${error.message}`
+            : 'This account has no Event Pilot profile. Ask an administrator to set one up.',
+        )
+      }
+      setDisplayName((data?.display_name as string | null) ?? '')
+      setWorkspaceCode((data?.workspace_code as string | null) ?? '')
     }
 
-    void client.auth.getSession().then(({ data }) => {
-      applySession(data.session)
+    void (async () => {
+      const { data } = await client.auth.getSession()
+      await applySession(data.session)
       if (active) setReady(true)
-    })
+    })()
     const { data: sub } = client.auth.onAuthStateChange((_event, next) => {
-      applySession(next)
+      void applySession(next)
     })
 
     return () => {
@@ -672,6 +821,7 @@ function useSupabaseAuth(): AuthState {
     displayName,
     workspaceCode,
     ready,
+    profileError,
     setDisplayName,
   }
 }
@@ -737,9 +887,11 @@ function deriveLineItemsFromBooking(booking: EventBooking): LineItem[] {
 }
 
 function getLineItems(booking: EventBooking): LineItem[] {
-  return booking.lineItems && booking.lineItems.length
-    ? booking.lineItems
-    : deriveLineItemsFromBooking(booking)
+  // Only derive when the booking has never had line items. An explicit empty
+  // array means the user deleted every row and saved that — treating it as
+  // "missing" resurrects the derived items in the document and the lists while
+  // the frozen revision snapshot still totals zero.
+  return booking.lineItems ?? deriveLineItemsFromBooking(booking)
 }
 
 function getDiscount(booking: EventBooking): Discount {
@@ -771,10 +923,12 @@ async function shareDocument(
 function discountAmount(subtotal: number, discount: Discount): number {
   switch (discount.mode) {
     case 'percent':
-      return subtotal * (discount.value / 100)
+      // Clamped to 0-100: a discount can never exceed the subtotal, and a
+      // negative one must not inflate the total instead of reducing it.
+      return subtotal * (Math.min(Math.max(discount.value, 0), 100) / 100)
     case 'value':
     case 'promo':
-      return Math.min(discount.value, subtotal)
+      return Math.min(Math.max(discount.value, 0), subtotal)
     default:
       return 0
   }
@@ -1540,7 +1694,7 @@ const initialLoginSession: LoginSession = {
 
 function App() {
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin'
-  const [activeModule, setActiveModule] = useState<ModuleId>(getModuleFromHash)
+  const [requestedModule, setActiveModule] = useState<ModuleId>(getModuleFromHash)
   // A view with an unsaved draft (e.g. an in-progress proposal edit) registers a
   // guard here: whether it's currently dirty, and what to ask before discarding.
   // Any navigation away from it routes through runGuarded so it can confirm
@@ -1557,6 +1711,11 @@ function App() {
     message: string
     onConfirm: () => void
   } | null>(null)
+  // True from the moment a tier sign-in starts until its profile/tier check has
+  // finished, so the login screen stays mounted for the whole round trip.
+  const [verifyingLogin, setVerifyingLogin] = useState(false)
+  // A rejection App decided after the form was submitted, handed to LoginView.
+  const [loginNotice, setLoginNotice] = useState('')
   // Runs `action` right away if nothing would be lost; otherwise shows a
   // confirm dialog first and only runs it if the user chooses to discard.
   const runGuarded = useCallback((action: () => void) => {
@@ -1676,6 +1835,12 @@ function App() {
   // Rebuild the enforced permission sets from saved overrides before rendering
   // any child, so every hasPermission() call this render is consistent.
   applyPermissionOverrides(rolePermissionOverrides)
+  // Clamp the requested module to what this role may actually open. Derived
+  // during render rather than in an effect so a denied view never paints, not
+  // even for a frame; the hash-writeback effect below then corrects the URL.
+  const activeModule: ModuleId = isModuleAllowed(loginSession.role, requestedModule)
+    ? requestedModule
+    : fallbackModule(loginSession.role)
   const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id)
   // null = show the list; a booking id = show that document's detail with a back button.
   const [beoViewBookingId, setBeoViewBookingId] = useState<string | null>(null)
@@ -1705,6 +1870,15 @@ function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [sandboxActions, setSandboxActions] = useState<SandboxAction[]>([])
+
+  // A signed-in account with no readable eventpilot_profiles row has an unknown
+  // tier. Running it on the 'staff' default would silently give a real account
+  // the wrong permissions for the whole session, so end the session. The login
+  // gate below shows the reason; this effect only ends the external session.
+  useEffect(() => {
+    if (!auth.profileError || !supabase) return
+    void supabase.auth.signOut()
+  }, [auth.profileError])
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -1894,9 +2068,12 @@ function App() {
           status: nextStatus,
           // Realized revenue only exists while Confirmed/Completed. Recompute it
           // from the target status in both directions so a fall-back clears it
-          // (otherwise the "confirmed revenue" KPI stays overstated).
-          revenue:
-            nextStatus === 'Confirmed' || nextStatus === 'Completed'
+          // (otherwise the "confirmed revenue" KPI stays overstated). A job that
+          // has been closed out keeps the audited final figure captured at
+          // closeout — that number is evidence, not a derived forecast.
+          revenue: booking.closure
+            ? booking.closure.finalRevenue
+            : nextStatus === 'Confirmed' || nextStatus === 'Completed'
               ? booking.forecastRevenue
               : 0,
           paymentStatus:
@@ -2023,6 +2200,10 @@ function App() {
   }
 
   const markClientApproved = (bookingId: string) => {
+    // A department viewer is view-only, and approving a document is a
+    // proposal:edit action — the button is hidden from both, but the write
+    // itself refuses too so a stale render can never slip one through.
+    if (departmentSession || !hasPermission(loginSession.role, 'proposal:edit')) return
     const today = toDateKey(new Date())
     setBookings((currentBookings) =>
       currentBookings.map((booking) =>
@@ -2201,6 +2382,11 @@ function App() {
         if (booking.id !== bookingId || !booking.agreement) return booking
         return {
           ...booking,
+          // The countersigned copy was what made this contract signed, so
+          // removing it has to release the booking's contract status too —
+          // otherwise BEO readiness still reports a contract nobody holds.
+          contractStatus:
+            booking.contractStatus === 'Signed' ? 'Signature required' : booking.contractStatus,
           agreement: {
             ...booking.agreement,
             status: 'Sent for signature',
@@ -2446,6 +2632,7 @@ function App() {
     workspaceCode: string,
     department?: BeoDepartment,
   ): Promise<string | null> => {
+    setLoginNotice('')
     // Department viewers never touch Supabase — they get a local, view-only
     // session scoped to a single BEO department.
     if (role === 'beo_viewer') {
@@ -2466,29 +2653,40 @@ function App() {
       role === 'staff' ? staffEmail(identifier, workspaceCode) : identifier.trim()
 
     if (isSupabaseEnabled && supabase) {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
-      if (error) {
-        return role === 'staff'
-          ? 'Invalid workspace code, username, or password.'
-          : error.message
-      }
+      // signInWithPassword fires onAuthStateChange immediately, which would
+      // make loginSession.authenticated true and swap the login screen for the
+      // app shell while the tier check below is still awaiting. Holding this
+      // flag keeps LoginView mounted, so a rejection is actually shown and a
+      // mismatched tier never renders the app even for a frame.
+      setVerifyingLogin(true)
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        })
+        if (error) {
+          return role === 'staff'
+            ? 'Invalid workspace code, username, or password.'
+            : error.message
+        }
 
-      // Enforce that the account tier matches the selected tab (Kaizen pattern):
-      // signing in through the wrong tab is denied rather than silently allowed.
-      const { data: profile } = await supabase
-        .from('eventpilot_profiles')
-        .select('role')
-        .eq('user_id', data.user.id)
-        .maybeSingle()
-      if (profile?.role !== role) {
-        await supabase.auth.signOut()
-        return `This is not a ${ROLE_LABELS[role].en} account.`
+        // Enforce that the account tier matches the selected tab (Kaizen
+        // pattern): signing in through the wrong tab is denied rather than
+        // silently allowed.
+        const { data: profile } = await supabase
+          .from('eventpilot_profiles')
+          .select('role')
+          .eq('user_id', data.user.id)
+          .maybeSingle()
+        if (profile?.role !== role) {
+          await supabase.auth.signOut()
+          return `This is not a ${ROLE_LABELS[role].en} account.`
+        }
+        setActiveModule('Dashboard')
+        return null
+      } finally {
+        setVerifyingLogin(false)
       }
-      setActiveModule('Dashboard')
-      return null
     }
 
     // Offline sandbox (Supabase not configured): accept the entered identity,
@@ -2587,6 +2785,7 @@ function App() {
       }
       setQuery('')
       setStatusFilter('All')
+      setLoginNotice('')
       setActiveModule('Login')
     })
   }
@@ -2625,8 +2824,51 @@ function App() {
     return <main className="login-shell" aria-busy="true" />
   }
 
-  if (!loginSession.authenticated || activeModule === 'Login') {
-    return <LoginView onSubmit={handleLoginSubmit} />
+  if (
+    !loginSession.authenticated ||
+    activeModule === 'Login' ||
+    verifyingLogin ||
+    auth.profileError
+  ) {
+    return (
+      <LoginView
+        departments={departments}
+        notice={auth.profileError || loginNotice}
+        onSubmit={handleLoginSubmit}
+      />
+    )
+  }
+
+  // A department (BEO) session carries no Supabase principal of its own, so in
+  // cloud mode it can only read real BEOs by riding an account that is already
+  // signed in on this browser. With no such account every synced key falls back
+  // to the unscoped local cache — i.e. the seeded demo events. Showing those as
+  // if they were the property's real BEOs would have viewers acknowledging
+  // instructions for events that do not exist, so say so instead.
+  if (departmentSession && isSupabaseEnabled && !auth.userId) {
+    return (
+      <main className="login-shell">
+        <section className="login-panel">
+          <p className="eyebrow">Department view</p>
+          <h1>This device is not linked to a workspace</h1>
+          <p>
+            Department sign-in does not yet have its own workspace account, so it can
+            only show live BEOs on a device where a Top Management, Manager, or Staff
+            account is signed in. Ask a manager to sign in on this device first.
+          </p>
+          <button
+            className="primary-action login-submit"
+            onClick={() => {
+              setDepartmentSession(null)
+              setActiveModule('Login')
+            }}
+            type="button"
+          >
+            Back to sign in
+          </button>
+        </section>
+      </main>
+    )
   }
 
   return (
@@ -3202,8 +3444,17 @@ const LOGIN_COPY: Record<
 
 /** Customer sign-in. The vendor console has its own ConsoleLoginView. */
 function LoginView({
+  departments,
+  notice,
   onSubmit,
 }: {
+  // The property's configured department list. A department viewer's session
+  // department has to be one BeoView will actually render a card for, so this
+  // must be the live list, not the seed constant.
+  departments: BeoDepartment[]
+  // A rejection decided by App after the form was submitted (wrong tier tab, or
+  // an account with no readable profile). Surfaced like any other sign-in error.
+  notice: string
   onSubmit: (
     role: AuthRole,
     identifier: string,
@@ -3219,8 +3470,13 @@ function LoginView({
   const [workspaceCode, setWorkspaceCode] = useState('')
   const [department, setDepartment] = useState<BeoDepartment | ''>('')
   const [error, setError] = useState('')
+  const [shownNotice, setShownNotice] = useState(notice)
   const [submitting, setSubmitting] = useState(false)
   const [lang, setLang] = useState<LoginLang>('en')
+  if (notice !== shownNotice) {
+    setShownNotice(notice)
+    if (notice) setError(notice)
+  }
   const t = LOGIN_COPY[lang]
   const isStaff = role === 'staff'
   const isDepartment = role === 'beo_viewer'
@@ -3356,7 +3612,7 @@ function LoginView({
                     value={department}
                   >
                     <option value="">{t.departmentPlaceholder}</option>
-                    {BEO_DEPARTMENTS.map((dept) => (
+                    {departments.map((dept) => (
                       <option key={dept} value={dept}>
                         {dept}
                       </option>
@@ -5028,6 +5284,16 @@ function LeadDetailView({
   // The parent remounts this view per lead (key={lead.id}), so the draft resets
   // on lead switch; after a Save, lead.stage already equals the draft.
   const [draftStage, setDraftStage] = useState<LeadStage>(lead.stage)
+  // The edit form's Stage select writes straight through to lead.stage without
+  // touching the staged value, and this view is not remounted for it. Without
+  // this resync, leaving edit mode looks like an unsaved change back to the OLD
+  // stage — and Save would write that stale stage plus a bogus history entry.
+  // After a real Save, lead.stage already equals draftStage, so this is a no-op.
+  const [stageSyncedFrom, setStageSyncedFrom] = useState<LeadStage>(lead.stage)
+  if (lead.stage !== stageSyncedFrom) {
+    setStageSyncedFrom(lead.stage)
+    setDraftStage(lead.stage)
+  }
   const hasStageChange = draftStage !== lead.stage
   const orderedHistory = [...(lead.history ?? [])].sort((first, second) =>
     first.timestamp.localeCompare(second.timestamp),
@@ -8227,6 +8493,9 @@ function BookingsView({
   const isLastStatus = selectedBooking
     ? ['Completed', 'Lost', 'Cancelled'].includes(selectedBooking.status)
     : true
+  // A closed-out job is audited: its status moves again only through Reopen in
+  // the closure panel, which clears the closure record deliberately.
+  const isClosedOut = Boolean(selectedBooking?.closure)
   const hasMoreBookings = bookings.length > bookingDisplayLimit
   const displayedBookings = showAllBookings
     ? bookings
@@ -8345,7 +8614,7 @@ function BookingsView({
               {canFallBack && (
                 <button
                   className="secondary-action"
-                  disabled={isFirstStatus}
+                  disabled={isFirstStatus || isClosedOut}
                   onClick={() => updateBookingStatus(selectedBooking.id, 'backward')}
                   type="button"
                 >
@@ -8356,7 +8625,7 @@ function BookingsView({
               {canAdvance && (
                 <button
                   className="primary-action"
-                  disabled={isLastStatus}
+                  disabled={isLastStatus || isClosedOut}
                   onClick={() => updateBookingStatus(selectedBooking.id, 'forward')}
                   type="button"
                 >
@@ -8834,7 +9103,7 @@ function BeoView({
               <small>Finance approval — {propertyProfile.signatoryTitle || 'Finance'}</small>
             </div>
           </div>
-          {!booking.clientApprovedAt && (
+          {!booking.clientApprovedAt && !isDepartmentViewer && canEditInstructions && (
             <div className="card-actions no-print">
               <button
                 className="secondary-action"
@@ -9350,7 +9619,20 @@ function DiscountControl({
             <button
               className={discount.mode === mode ? 'segment active' : 'segment'}
               key={mode}
-              onClick={() => onChange({ mode, value: mode === 'none' ? 0 : discount.value, code: discount.code })}
+              onClick={() => {
+                // Percent and the amount-style modes hold different units, so
+                // carrying the number across would reinterpret e.g. THB 5,000
+                // as 5000% off. Only reuse the value between the two amount
+                // modes, where it means the same thing.
+                const isAmountMode = (candidate: DiscountMode) =>
+                  candidate === 'value' || candidate === 'promo'
+                const keepsValue = isAmountMode(mode) && isAmountMode(discount.mode)
+                onChange({
+                  mode,
+                  value: keepsValue ? discount.value : 0,
+                  code: discount.code,
+                })
+              }}
               type="button"
             >
               {DISCOUNT_MODE_LABELS[mode]}
@@ -9363,6 +9645,7 @@ function DiscountControl({
           {editable ? (
             <FormField label={discount.mode === 'percent' ? 'Percent off' : 'Amount off'}>
               <input
+                max={discount.mode === 'percent' ? 100 : undefined}
                 min="0"
                 onChange={(event) => onChange({ ...discount, value: Number(event.target.value) })}
                 type="number"
@@ -10324,7 +10607,16 @@ function AgreementView({
   runGuarded: (action: () => void) => void
 }) {
   const agreement = booking.agreement
+  // Once the countersigned copy is on file, this document IS the executed
+  // contract: saving a revision would change the wording while the page still
+  // presents the old scan as covering it, and invoicing is unlocked off
+  // signedFile. Withdraw the signature ("Remove signed copy") to revise.
+  const isExecuted = Boolean(agreement && (agreement.status === 'Signed' || agreement.signedFile))
   const canEdit = hasPermission(account.role, 'proposal:edit')
+  // Managing the signature (upload / remove) stays available — removing the
+  // countersigned copy is exactly how you unlock a revision — but the contract
+  // text itself is frozen while that copy is on file.
+  const canReviseContent = canEdit && !isExecuted
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<AgreementContent | null>(agreement?.content ?? null)
   const [revisionNote, setRevisionNote] = useState('')
@@ -10337,8 +10629,13 @@ function AgreementView({
     const file = files?.[0]
     if (!file) return
     setUploadNotice('')
-    if (file.size > 4 * 1024 * 1024) {
-      setUploadNotice(`${file.name} is over 4 MB — upload a smaller scan.`)
+    // Stored as a base64 data URL inside the bookings blob, which is also
+    // cached in localStorage — base64 inflates by ~4/3, so the cap has to sit
+    // well under the ~5 MB per-origin budget shared with every other booking.
+    if (file.size > SIGNED_AGREEMENT_MAX_BYTES) {
+      setUploadNotice(
+        `${file.name} is over ${fileSizeLabel(SIGNED_AGREEMENT_MAX_BYTES)} — upload a smaller scan.`,
+      )
       return
     }
     const reader = new FileReader()
@@ -10802,7 +11099,7 @@ function AgreementView({
               <FileText size={16} />
               Open proposal
             </button>
-            {canEdit &&
+            {canReviseContent &&
               (editing ? (
                 <>
                   <button className="secondary-action" onClick={cancelEditing} type="button">
@@ -10831,6 +11128,11 @@ function AgreementView({
               <Download size={16} />
               View PDF
             </button>
+            {isExecuted && canEdit && (
+              <p className="form-hint">
+                This agreement is signed. Remove the signed copy below to revise it.
+              </p>
+            )}
           </div>
         </div>
 
